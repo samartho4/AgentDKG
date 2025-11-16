@@ -173,7 +173,7 @@ export const makeCompletionRequest = async (
     bearerToken?: string;
   },
 ) =>
-  (opts?.fetch || fetch)(new URL(process.env.EXPO_PUBLIC_APP_URL + "/llm"), {
+  (opts?.fetch || fetch)(new URL((process.env.EXPO_PUBLIC_APP_URL || "http://localhost:9200") + "/llm"), {
     body: JSON.stringify(req),
     headers: {
       Authorization: `Bearer ${opts?.bearerToken}`,

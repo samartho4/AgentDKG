@@ -19,6 +19,7 @@ import Container from "@/components/layout/Container";
 import Header from "@/components/layout/Header";
 import Chat from "@/components/Chat";
 import DeepAgentsPanel from "@/components/Chat/DeepAgentsPanel";
+import KnowledgeMinerPanel from "@/components/KnowledgeMinerPanel";
 import { SourceKAResolver } from "@/components/Chat/Message/SourceKAs/CollapsibleItem";
 import { useAlerts } from "@/components/Alerts";
 
@@ -37,6 +38,18 @@ import {
 } from "@/shared/files";
 import { toError } from "@/shared/errors";
 import useSettings from "@/hooks/useSettings";
+
+type KnowledgeMinerSessionDebug = {
+  kind: "knowledge_miner_session";
+  sessionId: string;
+  domain: string;
+  task: string;
+  todos: Array<{ content: string; status: string }>;
+  workspacePaths: string[];
+  subagentsUsed: { name: string; summary?: string }[];
+  trustSignals?: any[];
+  mainReportPath?: string;
+};
 
 function extractDeepAgentsMetaFromMessages(messages: ChatMessage[]): any | null {
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
@@ -72,6 +85,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDeepAgentsPanelOpen, setIsDeepAgentsPanelOpen] = useState(true);
+  const [kmSession, setKmSession] = useState<KnowledgeMinerSessionDebug | null>(null);
 
   const chatMessagesRef = useRef<ScrollView>(null);
 
@@ -89,16 +103,23 @@ export default function ChatPage() {
         maxTotalTimeout: 300000,
       })
       .then((result) => {
+        let content = result.content as ToolCallResultContent;
+
+        // If this is knowledge_miner_run, extract debug payload from _meta
+        if (tc.name === "knowledge_miner_run" && (result as any)._meta?.debugPayload) {
+          setKmSession((result as any)._meta.debugPayload as KnowledgeMinerSessionDebug);
+        }
+
         tools.saveCallInfo(tc.id, {
           input: tc.args,
           status: "success",
-          output: result.content,
+          output: content,
         });
 
         return sendMessage({
           role: "tool",
           tool_call_id: tc.id,
-          content: result.content as ToolCallResultContent,
+          content,
         });
       })
       .catch((err) => {
@@ -309,6 +330,8 @@ export default function ChatPage() {
             ]}
           >
             <Header handleLogout={() => mcp.disconnect()} />
+            {/* Knowledge Miner Workspace panel */}
+            {kmSession && <KnowledgeMinerPanel session={kmSession} />}
             {/* Deep Agents knowledge-mining workspace panel */}
             <DeepAgentsPanel
               messages={messages}

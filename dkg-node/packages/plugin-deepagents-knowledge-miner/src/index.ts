@@ -37,8 +37,13 @@ export default defineDkgPlugin((ctx, mcp) => {
     },
     async ({ task, domain, sessionId }) => {
       try {
+        console.log('📝 Creating knowledge miner agent...');
         const agent = createKnowledgeMinerAgent(ctx);
+        console.log('✅ Agent created successfully');
+        
+        console.log('⚙️  Creating thread config...');
         const config = defaultThreadConfig();
+        console.log('✅ Config created:', config);
 
         // Build initial user message
         let userMessage = task;
@@ -46,14 +51,12 @@ export default defineDkgPlugin((ctx, mcp) => {
           userMessage += `\n\nDomain: ${domain}`;
         }
 
-        // Collect progress updates as we stream
+        // Use invoke with timeout
         const progressUpdates: string[] = [];
-        let result: any = null;
         let stepCount = 0;
-        
         progressUpdates.push('🚀 Starting knowledge mining session...\n');
         
-        // Publish initial status if sessionId provided
+        // Publish initial status
         if (sessionId && publishProgress) {
           publishProgress(sessionId, {
             type: 'status',
@@ -61,18 +64,29 @@ export default defineDkgPlugin((ctx, mcp) => {
             progress: 0,
           });
         }
+
+        console.log('🔍 Invoking agent with task:', userMessage);
         
-        const stream = await agent.stream(
+        const result: any = await agent.invoke(
           { messages: [{ role: "user", content: userMessage }] },
           config,
-        );
+        ).then(res => {
+          console.log('✅ Agent invocation completed');
+          console.log('📦 Result structure:', JSON.stringify(res, null, 2).substring(0, 500));
+          return res;
+        }).catch(err => {
+          console.error('❌ Agent invocation error:', err);
+          throw err;
+        });
+        
+        console.log('🎯 Result received, processing...');
 
-        for await (const chunk of stream) {
+        // Fake loop for compatibility with existing code
+        for await (const chunk of [result]) {
           stepCount++;
           
-          // Update result with latest state
+          // Process the result chunk
           if (chunk && typeof chunk === 'object') {
-            result = chunk;
             
             // Extract current state
             const currentState: any = Object.values(chunk)[0] || chunk;
@@ -81,7 +95,7 @@ export default defineDkgPlugin((ctx, mcp) => {
             const files = currentState.files || {};
             
             // Extract current tool being executed
-            const lastMsg: any = messages[messages.length - 1];
+            const lastMsg: any = messages.length > 0 ? messages[messages.length - 1] : null;
             
             if (lastMsg?.tool_calls && lastMsg.tool_calls.length > 0) {
               for (const tc of lastMsg.tool_calls) {
@@ -149,7 +163,9 @@ export default defineDkgPlugin((ctx, mcp) => {
 
         // Extract thread_id and response
         const threadId = config.configurable.thread_id;
-        const lastMessage = result.messages[result.messages.length - 1];
+        const lastMessage = result.messages && result.messages.length > 0 
+          ? result.messages[result.messages.length - 1] 
+          : { content: "No response generated" };
 
         // Extract DeepAgents metadata from the result state
         // DeepAgents returns state with todos (array) and files (object)
@@ -222,20 +238,37 @@ export default defineDkgPlugin((ctx, mcp) => {
           subagentsUsed: Array.from(subagentsUsed).length > 0 ? Array.from(subagentsUsed) : undefined,
         };
 
-        const metadataBlock = `\n\n\`\`\`deepagents-meta\n${JSON.stringify(metadata, null, 2)}\n\`\`\``;
-        
         // Build progress log
         const progressLog = progressUpdates.length > 0 
           ? `\n\n<details>\n<summary>📊 Execution Log (${stepCount} steps)</summary>\n\n${progressUpdates.join('\n')}\n</details>`
           : '';
 
+        // Extract domain from task or use default
+        const taskDomain = domain || 'general';
+        
+        // Build debug payload for UI
+        const debugPayload = {
+          kind: "knowledge_miner_session",
+          sessionId: threadId,
+          domain: taskDomain,
+          task,
+          todos: todosWithStatus,
+          workspacePaths: Object.keys(files),
+          subagentsUsed: Array.from(subagentsUsed).map(name => ({ name })),
+          trustSignals: [], // TODO: extract from tool executions
+          mainReportPath: memoriesFiles.length > 0 ? memoriesFiles[0] : undefined,
+        };
+
         return {
           content: [
             {
               type: "text",
-              text: `${progressLog}\n\n${lastMessage.content}${metadataBlock}`,
+              text: `${progressLog}\n\n${lastMessage.content}`,
             },
-          ],
+          ] as any,
+          _meta: {
+            debugPayload,
+          },
         };
       } catch (err: any) {
         // Publish error via SSE
@@ -296,7 +329,9 @@ export default defineDkgPlugin((ctx, mcp) => {
         // Resume with decisions
         const result = await agent.invoke({ decisions }, config);
 
-        const lastMessage = result.messages[result.messages.length - 1];
+        const lastMessage = result.messages && result.messages.length > 0 
+          ? result.messages[result.messages.length - 1] 
+          : { content: "No response generated" };
 
         return {
           content: [
