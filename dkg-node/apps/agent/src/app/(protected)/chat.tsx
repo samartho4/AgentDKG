@@ -18,6 +18,7 @@ import Page from "@/components/layout/Page";
 import Container from "@/components/layout/Container";
 import Header from "@/components/layout/Header";
 import Chat from "@/components/Chat";
+import DeepAgentsPanel from "@/components/Chat/DeepAgentsPanel";
 import { SourceKAResolver } from "@/components/Chat/Message/SourceKAs/CollapsibleItem";
 import { useAlerts } from "@/components/Alerts";
 
@@ -37,6 +38,27 @@ import {
 import { toError } from "@/shared/errors";
 import useSettings from "@/hooks/useSettings";
 
+function extractDeepAgentsMetaFromMessages(messages: ChatMessage[]): any | null {
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  if (!lastAssistant) return null;
+
+  const texts: string[] = [];
+  for (const c of toContents(lastAssistant.content)) {
+    if (c.type === "text") texts.push(c.text);
+  }
+  if (!texts.length) return null;
+
+  const joined = texts.join("\n\n");
+  const match = joined.match(/```deepagents-meta([\s\S]*?)```/);
+  if (!match) return null;
+
+  try {
+    return JSON.parse(match[1] || "{}");
+  } catch {
+    return null;
+  }
+}
+
 export default function ChatPage() {
   const colors = useColors();
   const { isNativeMobile, isWeb, width } = usePlatform();
@@ -49,14 +71,20 @@ export default function ChatPage() {
 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isDeepAgentsPanelOpen, setIsDeepAgentsPanelOpen] = useState(true);
 
   const chatMessagesRef = useRef<ScrollView>(null);
 
   async function callTool(tc: ToolCall & { id: string }) {
     tools.saveCallInfo(tc.id, { input: tc.args, status: "loading" });
 
+    // Add sessionId for knowledge_miner_run to enable SSE progress
+    const args = tc.name === 'knowledge_miner_run' 
+      ? { ...tc.args, sessionId: tc.id }
+      : tc.args;
+
     return mcp
-      .callTool({ name: tc.name, arguments: tc.args }, undefined, {
+      .callTool({ name: tc.name, arguments: args }, undefined, {
         timeout: 300000,
         maxTotalTimeout: 300000,
       })
@@ -115,6 +143,11 @@ export default function ChatPage() {
 
     if (!mcp.token) throw new Error("Unauthorized");
 
+    console.log("=== SENDING TO LLM ===");
+    console.log("Tools being sent:", tools.enabled.map(t => t.function.name));
+    console.log("Total tools:", tools.enabled.length);
+    console.log("Full tools array:", JSON.stringify(tools.enabled, null, 2));
+
     setIsGenerating(true);
     const completion = await makeCompletionRequest(
       {
@@ -135,6 +168,50 @@ export default function ChatPage() {
     setMessages((prevMessages) => [...prevMessages, completion]);
     setIsGenerating(false);
     setTimeout(() => chatMessagesRef.current?.scrollToEnd(), 100);
+  }
+
+  async function handleDeepAgentsDecisions(decisionType: "approve" | "reject") {
+    const meta = extractDeepAgentsMetaFromMessages(messages);
+    if (!meta || !meta.threadId || !meta.actionRequests || !meta.actionRequests.length) {
+      showAlert({
+        type: "error",
+        title: "Cannot resume Knowledge Miner",
+        message: "No pending Deep Agents actions found to approve or reject.",
+      });
+      return;
+    }
+
+    const decisions = meta.actionRequests.map(() => ({ type: decisionType }));
+
+    try {
+      const result = await mcp.callTool(
+        {
+          name: "knowledge_miner_resume",
+          arguments: {
+            threadId: meta.threadId,
+            decisions,
+          },
+        },
+        undefined,
+        {
+          timeout: 300000,
+          maxTotalTimeout: 300000,
+        },
+      );
+
+      // Feed the result back into the chat as a tool message
+      await sendMessage({
+        role: "tool",
+        tool_call_id: `knowledge-miner.resume-${Date.now()}`,
+        content: result.content as ToolCallResultContent,
+      });
+    } catch (err: any) {
+      showAlert({
+        type: "error",
+        title: "Failed to resume Knowledge Miner",
+        message: err?.message ?? String(err),
+      });
+    }
   }
 
   const kaResolver = useCallback<SourceKAResolver>(
@@ -210,6 +287,7 @@ export default function ChatPage() {
   const isLandingScreen = !messages.length && !isNativeMobile;
   console.debug("Messages:", messages);
   console.debug("Tools (enabled):", tools.enabled);
+  console.debug("MCP tools available:", mcp.tools.map(t => t.name));
 
   return (
     <Page style={{ flex: 1, position: "relative", marginBottom: 0 }}>
@@ -231,6 +309,13 @@ export default function ChatPage() {
             ]}
           >
             <Header handleLogout={() => mcp.disconnect()} />
+            {/* Deep Agents knowledge-mining workspace panel */}
+            <DeepAgentsPanel
+              messages={messages}
+              isOpen={isDeepAgentsPanelOpen}
+              onToggle={() => setIsDeepAgentsPanelOpen((v) => !v)}
+              onDecideInterrupt={handleDeepAgentsDecisions}
+            />
             <Chat.Messages
               ref={chatMessagesRef}
               style={[

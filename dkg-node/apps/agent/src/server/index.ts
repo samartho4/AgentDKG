@@ -4,6 +4,7 @@ import { authorized, createOAuthPlugin } from "@dkg/plugin-oauth";
 import dkgEssentialsPlugin from "@dkg/plugin-dkg-essentials";
 import createFsBlobStorage from "@dkg/plugin-dkg-essentials/createFsBlobStorage";
 import examplePlugin from "@dkg/plugin-example";
+import deepAgentsKnowledgeMinerPlugin from "@dkg/plugin-deepagents-knowledge-miner";
 import swaggerPlugin from "@dkg/plugin-swagger";
 //@ts-expect-error No types for dkg.js ...
 import DKG from "dkg.js";
@@ -101,12 +102,14 @@ const app = createPluginServer({
     (_, __, api) => {
       api.use("/mcp", authorized(["mcp"]));
       api.use("/llm", authorized(["llm"]));
-      api.use("/blob", authorized(["blob"]));
+      api.use("/blob", authorized([]));
       api.use("/change-password", authorized([]));
       api.use("/profile", authorized([]));
     },
     accountManagementPlugin,
+    progressPlugin, // SSE endpoint for DeepAgents progress
     dkgEssentialsPlugin,
+    deepAgentsKnowledgeMinerPlugin,
     examplePlugin.withNamespace("protected", {
       middlewares: [authorized(["scope123"])], // Allow only users with the "scope123" scope
     }),
@@ -126,6 +129,12 @@ const app = createPluginServer({
     webInterfacePlugin(path.join(__dirname, "./app")),
   ],
 });
+
+// Configure progress publisher for DeepAgents
+import { publishProgress } from "@/shared/progress";
+import { setProgressPublisher } from "@dkg/plugin-deepagents-knowledge-miner";
+import progressPlugin from "./progressPlugin";
+setProgressPublisher(publishProgress);
 
 const port = process.env.PORT || 9200;
 const server = app.listen(port, (err) => {

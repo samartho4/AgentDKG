@@ -1,0 +1,116 @@
+<mxfile host="app.diagrams.net" modified="2025-11-15T00:00:00Z" agent="DeepAgentsDKG" version="22.0.0">
+  <diagram id="diagram1" name="Architecture Overview">
+    <mxGraphModel dx="1200" dy="800" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="700" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+
+        <!-- Source repo & docs -->
+        <mxCell id="repoBox" value="GitHub repo&#xa;(fork of DKG Edge Node)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#111111;strokeColor=#ffffff;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="40" y="60" width="260" height="60" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="readmeBox" value="README.md&#xa;- setup &amp; dependencies&#xa;- DKG / MCP / x402 usage&#xa;- JSON-LD examples + tokenomics sim" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d3220;strokeColor=#f5f5f5;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="40" y="140" width="260" height="100" as="geometry"/>
+        </mxCell>
+
+        <!-- MCP clients -->
+        <mxCell id="clientsBox" value="MCP clients&#xa;(ChatGPT, Guardian, CLIs)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1f2a3c;strokeColor=#d4e1ff;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="40" y="310" width="260" height="80" as="geometry"/>
+        </mxCell>
+
+        <!-- agentDKG runtime -->
+        <mxCell id="agentDKGGroup" value="agentDKG runtime" style="swimlane;childLayout=stackLayout;horizontal=1;startSize=24;rounded=1;html=1;fillColor=#1f1f1f;strokeColor=#ffffff;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="350" y="220" width="340" height="230" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="dkgAgentBox" value="dkgAgent&#xa;(existing MCP server + core services)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#000000;strokeColor=#cccccc;fontColor=#ffffff;" vertex="1" parent="agentDKGGroup">
+          <mxGeometry x="20" y="40" width="300" height="70" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="deepAgentsBox" value="DeepAgents knowledge-mining plugin&#xa;- planning &amp; file workspace&#xa;- tools for DKG, web, x402" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3a2745;strokeColor=#e1d5e7;fontColor=#ffffff;" vertex="1" parent="agentDKGGroup">
+          <mxGeometry x="20" y="120" width="300" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="subagentsBox" value="Subagents&#xa;• discovery / extraction&#xa;• enrichment / validation&#xa;• payment / reporting" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#14321f;strokeColor=#a8d08d;fontColor=#ffffff;" vertex="1" parent="agentDKGGroup">
+          <mxGeometry x="20" y="210" width="300" height="70" as="geometry"/>
+        </mxCell>
+
+        <!-- External data -->
+        <mxCell id="extDataBox" value="External data sources&#xa;- web / news / NGO reports&#xa;- ESG &amp; supply-chain APIs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#3d2b1f;strokeColor=#ffe6cc;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="350" y="490" width="340" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- DKG / NeuroWeb cluster -->
+        <mxCell id="dkgGroup" value="OriginTrail DKG on NeuroWeb / Polkadot" style="swimlane;childLayout=stackLayout;horizontal=1;startSize=24;rounded=1;html=1;fillColor=#141a2b;strokeColor=#99c2ff;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="740" y="200" width="360" height="260" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="edgeNodeBox" value="DKG Edge Node services&#xa;- publishing / querying&#xa;- dRAG / knowledge mining APIs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#1b2235;strokeColor=#d0e0ff;fontColor=#ffffff;" vertex="1" parent="dkgGroup">
+          <mxGeometry x="20" y="40" width="320" height="80" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="assetsBox" value="JSON-LD Knowledge Assets&#xa;- SupplyChainRiskEvent&#xa;- SupplierProfile&#xa;- ValidationRecord&#xa;- PaymentRecord&#xa;- AgentReputation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#d0e0ff;fontColor=#ffffff;" vertex="1" parent="dkgGroup">
+          <mxGeometry x="20" y="130" width="320" height="100" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="examplesBox" value="examples/*.jsonld&#xa;- structured examples&#xa;- tokenomics simulation data" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#141414;strokeColor=#d0e0ff;fontColor=#ffffff;" vertex="1" parent="dkgGroup">
+          <mxGeometry x="20" y="235" width="320" height="60" as="geometry"/>
+        </mxCell>
+
+        <!-- x402 gateway -->
+        <mxCell id="x402Box" value="x402 gateways&#xa;+ premium data providers" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#402020;strokeColor=#f8cecc;fontColor=#ffffff;" vertex="1" parent="1">
+          <mxGeometry x="740" y="490" width="360" height="90" as="geometry"/>
+        </mxCell>
+
+        <!-- Flows -->
+
+        <!-- README -> agentDKG -->
+        <mxCell id="e1" value="build &amp; config" style="endArrow=block;html=1;strokeColor=#ffffff;dashed=1;" edge="1" parent="1" source="readmeBox" target="agentDKGGroup">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- README -> DKG examples -->
+        <mxCell id="e2" value="example assets" style="endArrow=block;html=1;strokeColor=#ffffff;dashed=1;" edge="1" parent="1" source="readmeBox" target="examplesBox">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- MCP clients -> agentDKG -->
+        <mxCell id="e3" value="MCP calls&#xa;query / verify / publish" style="endArrow=block;html=1;strokeColor=#ffffff;" edge="1" parent="1" source="clientsBox" target="agentDKGGroup">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- agentDKG -> MCP clients -->
+        <mxCell id="e4" value="UALs + risk report" style="endArrow=block;html=1;strokeColor=#ffffff;" edge="1" parent="1" source="agentDKGGroup" target="clientsBox">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- DeepAgents -> external data -->
+        <mxCell id="e5" value="web / HTTP tools" style="endArrow=block;html=1;strokeColor=#ffffff;" edge="1" parent="1" source="deepAgentsBox" target="extDataBox">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- DeepAgents -> DKG -->
+        <mxCell id="e6" value="DKG queries + JSON-LD publish" style="endArrow=block;html=1;strokeColor=#ffffff;" edge="1" parent="1" source="deepAgentsBox" target="dkgGroup">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- DKG -> DeepAgents -->
+        <mxCell id="e7" value="resolved assets + context" style="endArrow=block;html=1;strokeColor=#ffffff;" edge="1" parent="1" source="dkgGroup" target="deepAgentsBox">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- DeepAgents -> x402 -->
+        <mxCell id="e8" value="x402_pay_for_resource()" style="endArrow=block;html=1;strokeColor=#ffffff;" edge="1" parent="1" source="deepAgentsBox" target="x402Box">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <!-- x402 -> DeepAgents -->
+        <mxCell id="e9" value="gated data + receipts" style="endArrow=block;html=1;strokeColor=#ffffff;" edge="1" parent="1" source="x402Box" target="deepAgentsBox">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
