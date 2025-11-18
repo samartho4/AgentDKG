@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { View, Platform, KeyboardAvoidingView, ScrollView } from "react-native";
 import { Image } from "expo-image";
 import * as Clipboard from "expo-clipboard";
@@ -20,6 +20,9 @@ import Header from "@/components/layout/Header";
 import Chat from "@/components/Chat";
 import DeepAgentsPanel from "@/components/Chat/DeepAgentsPanel";
 import KnowledgeMinerPanel from "@/components/KnowledgeMinerPanel";
+import ThreadHistoryPanel, {
+  ThreadSummary,
+} from "@/components/ThreadHistoryPanel";
 import { SourceKAResolver } from "@/components/Chat/Message/SourceKAs/CollapsibleItem";
 import { useAlerts } from "@/components/Alerts";
 
@@ -50,6 +53,54 @@ type KnowledgeMinerSessionDebug = {
   trustSignals?: any[];
   mainReportPath?: string;
 };
+
+const THREADS_STORAGE_KEY = "km_threads_v1";
+const KM_SESSIONS_STORAGE_KEY = "km_sessions_v1";
+
+function makeThreadSummaryFromSession(session: KnowledgeMinerSessionDebug): ThreadSummary {
+  const now = Date.now();
+  const title =
+    session.task ||
+    // fallback name – keeps list usable even if task is missing
+    `Session ${session.sessionId.slice(0, 8)}`;
+  return {
+    id: session.sessionId,
+    sessionId: session.sessionId,
+    title,
+    domain: session.domain,
+    task: session.task,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function upsertThreadFromSession(
+  threads: ThreadSummary[],
+  session: KnowledgeMinerSessionDebug
+): ThreadSummary[] {
+  const now = Date.now();
+  const idx = threads.findIndex((t) => t.sessionId === session.sessionId);
+  if (idx === -1) {
+    return [makeThreadSummaryFromSession(session), ...threads];
+  }
+  const existing = threads[idx];
+  if (!existing) {
+    return [makeThreadSummaryFromSession(session), ...threads];
+  }
+  const updated: ThreadSummary = {
+    id: existing.id,
+    sessionId: existing.sessionId,
+    title: session.task || existing.title,
+    domain: session.domain ?? existing.domain,
+    task: session.task ?? existing.task,
+    createdAt: existing.createdAt,
+    updatedAt: now,
+  };
+  const next = [...threads];
+  next[idx] = updated;
+  next.sort((a, b) => b.updatedAt - a.updatedAt);
+  return next;
+}
 
 function extractDeepAgentsMetaFromMessages(messages: ChatMessage[]): any | null {
   const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
@@ -86,8 +137,66 @@ export default function ChatPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDeepAgentsPanelOpen, setIsDeepAgentsPanelOpen] = useState(true);
   const [kmSession, setKmSession] = useState<KnowledgeMinerSessionDebug | null>(null);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [kmSessionsById, setKmSessionsById] = useState<Record<string, KnowledgeMinerSessionDebug>>({});
+  const [isThreadsCollapsed, setIsThreadsCollapsed] = useState(false);
 
   const chatMessagesRef = useRef<ScrollView>(null);
+
+  // Load thread history and sessions (SSR-safe)
+  useEffect(() => {
+    if (!isWeb || typeof window === "undefined") return;
+    try {
+      const rawThreads = window.localStorage.getItem(THREADS_STORAGE_KEY);
+      const rawSessions = window.localStorage.getItem(KM_SESSIONS_STORAGE_KEY);
+      if (rawThreads) {
+        const parsed = JSON.parse(rawThreads) as ThreadSummary[];
+        setThreads(parsed);
+      }
+      if (rawSessions) {
+        const parsed = JSON.parse(rawSessions) as Record<string, KnowledgeMinerSessionDebug>;
+        setKmSessionsById(parsed);
+      }
+    } catch (err) {
+      console.warn("Failed to restore KM threads", err);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWeb]);
+
+  // Persist thread history and sessions
+  useEffect(() => {
+    if (!isWeb || typeof window === "undefined") return;
+    window.localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(threads));
+    window.localStorage.setItem(KM_SESSIONS_STORAGE_KEY, JSON.stringify(kmSessionsById));
+  }, [threads, kmSessionsById, isWeb]);
+
+  const handleKnowledgeMinerResult = useCallback((debugPayload: KnowledgeMinerSessionDebug | undefined) => {
+    if (!debugPayload?.sessionId) return;
+    setKmSession(debugPayload);
+    setKmSessionsById((prev) => ({
+      ...prev,
+      [debugPayload.sessionId]: debugPayload,
+    }));
+    setThreads((prev) => upsertThreadFromSession(prev, debugPayload));
+    setActiveThreadId(debugPayload.sessionId);
+  }, []);
+
+  const handleNewKmSession = useCallback(() => {
+    // "New session" from left panel:
+    // clear chat + KM session but keep thread history
+    setMessages([]);
+    tools.reset();
+    setKmSession(null);
+    setActiveThreadId(null);
+  }, [tools]);
+
+  const handleSelectThread = useCallback((thread: ThreadSummary) => {
+    setActiveThreadId(thread.id);
+    const session = kmSessionsById[thread.sessionId];
+    // If we have a stored debug session, show it again in the workspace panel
+    setKmSession(session ?? null);
+  }, [kmSessionsById]);
 
   async function callTool(tc: ToolCall & { id: string }) {
     tools.saveCallInfo(tc.id, { input: tc.args, status: "loading" });
@@ -107,7 +216,10 @@ export default function ChatPage() {
 
         // If this is knowledge_miner_run, extract debug payload from _meta
         if (tc.name === "knowledge_miner_run" && (result as any)._meta?.debugPayload) {
-          setKmSession((result as any)._meta.debugPayload as KnowledgeMinerSessionDebug);
+          const debugPayload = (result as any)._meta.debugPayload;
+          if (debugPayload.kind === "knowledge_miner_session") {
+            handleKnowledgeMinerResult(debugPayload as KnowledgeMinerSessionDebug);
+          }
         }
 
         tools.saveCallInfo(tc.id, {
@@ -323,36 +435,34 @@ export default function ChatPage() {
               : { justifyContent: "flex-end" },
           ]}
         >
-          <Container
-            style={[
-              { paddingBottom: 0 },
-              isLandingScreen && { flex: null as any },
-            ]}
-          >
-            <Header handleLogout={() => mcp.disconnect()} />
-            {/* Knowledge Miner Workspace panel */}
-            {kmSession && <KnowledgeMinerPanel session={kmSession} />}
-            {/* Deep Agents knowledge-mining workspace panel */}
-            <DeepAgentsPanel
-              messages={messages}
-              isOpen={isDeepAgentsPanelOpen}
-              onToggle={() => setIsDeepAgentsPanelOpen((v) => !v)}
-              onDecideInterrupt={handleDeepAgentsDecisions}
-            />
-            <Chat.Messages
-              ref={chatMessagesRef}
-              style={[
-                {
-                  width: "100%",
-                  marginHorizontal: "auto",
-                  maxWidth: 800,
-                },
-                width >= 800 + 48 * 2 + 20 * 2 && {
-                  maxWidth: 800 + 48 * 2,
-                  paddingRight: 48,
-                },
-              ]}
-            >
+          {width >= 1280 ? (
+            <View style={{ flexDirection: "row", flex: 1 }}>
+              {/* LEFT: Thread history */}
+              <ThreadHistoryPanel
+                threads={threads}
+                activeThreadId={activeThreadId}
+                onSelectThread={handleSelectThread}
+                onNewSession={handleNewKmSession}
+                isCollapsed={isThreadsCollapsed}
+                onToggleCollapsed={() => setIsThreadsCollapsed((v) => !v)}
+              />
+              {/* CENTER: header + messages */}
+              <View style={{ flex: 1 }}>
+                <Container
+                  style={[
+                    { paddingBottom: 0 },
+                    isLandingScreen && { flex: null as any },
+                  ]}
+                >
+                  <Header handleLogout={() => mcp.disconnect()} />
+                  <Chat.Messages
+                    ref={chatMessagesRef}
+                    style={{
+                      width: "100%",
+                      marginHorizontal: "auto",
+                      maxWidth: 800,
+                    }}
+                  >
               {messages.map((m, i) => {
                 if (m.role !== "user" && m.role !== "assistant") return null;
 
@@ -465,18 +575,183 @@ export default function ChatPage() {
                         onCopyAnswer={() => {
                           Clipboard.setStringAsync(text.join("\n").trim());
                         }}
-                        onStartAgain={() => {
-                          setMessages([]);
-                          tools.reset();
-                        }}
+                        onStartAgain={handleNewKmSession}
                       />
                     )}
                   </Chat.Message>
                 );
-              })}
-              {isGenerating && <Chat.Thinking />}
-            </Chat.Messages>
-          </Container>
+                      })}
+                      {isGenerating && <Chat.Thinking />}
+                    </Chat.Messages>
+                  </Container>
+                </View>
+                {/* RIGHT: workspace (Knowledge Miner + subagents) */}
+                <View style={{ width: 420 }}>
+                  <Container style={{ paddingBottom: 0 }}>
+                    {kmSession && <KnowledgeMinerPanel session={kmSession} />}
+                    <DeepAgentsPanel
+                      messages={messages}
+                      isOpen={isDeepAgentsPanelOpen}
+                      onToggle={() => setIsDeepAgentsPanelOpen((v) => !v)}
+                      onDecideInterrupt={handleDeepAgentsDecisions}
+                    />
+                  </Container>
+                </View>
+              </View>
+            ) : (
+            // Narrow layout: keep the old single-column structure, no history panel
+            <Container
+              style={[
+                { paddingBottom: 0 },
+                isLandingScreen && { flex: null as any },
+              ]}
+            >
+              <Header handleLogout={() => mcp.disconnect()} />
+              {/* Knowledge Miner Workspace panel */}
+              {kmSession && <KnowledgeMinerPanel session={kmSession} />}
+              {/* Deep Agents knowledge-mining workspace panel */}
+              <DeepAgentsPanel
+                messages={messages}
+                isOpen={isDeepAgentsPanelOpen}
+                onToggle={() => setIsDeepAgentsPanelOpen((v) => !v)}
+                onDecideInterrupt={handleDeepAgentsDecisions}
+              />
+              <Chat.Messages
+                ref={chatMessagesRef}
+                style={[
+                  {
+                    width: "100%",
+                    marginHorizontal: "auto",
+                    maxWidth: 800,
+                  },
+                  width >= 800 + 48 * 2 + 20 * 2 && {
+                    maxWidth: 800 + 48 * 2,
+                    paddingRight: 48,
+                  },
+                ]}
+              >
+                {messages.map((m, i) => {
+                  if (m.role !== "user" && m.role !== "assistant") return null;
+
+                  const kas: SourceKA[] = [];
+                  const files: FileDefinition[] = [];
+                  const images: { uri: string }[] = [];
+                  const text: string[] = [];
+
+                  for (const c of toContents(m.content)) {
+                    if (c.type === "image_url") {
+                      images.push({ uri: c.image_url });
+                      continue;
+                    }
+
+                    if (c.type === "text") {
+                      const k = parseSourceKAContent(c as unknown as any);
+                      if (k) {
+                        kas.push(...k);
+                        continue;
+                      }
+
+                      const f = parseFilesFromContent(c);
+                      if (f.length) {
+                        for (const file of f)
+                          if (file.mimeType?.startsWith("image/"))
+                            images.push({ uri: file.uri });
+                          else files.push(file);
+                        continue;
+                      }
+
+                      text.push(c.text);
+                    }
+                  }
+
+                  const isLastMessage = i === messages.length - 1;
+                  const isIdle = !isGenerating && !m.tool_calls?.length;
+
+                  return (
+                    <Chat.Message
+                      key={i}
+                      icon={m.role as "user" | "assistant"}
+                      style={{ gap: 8 }}
+                    >
+                      {/* Source Knowledge Assets */}
+                      <Chat.Message.SourceKAs kas={kas} resolver={kaResolver} />
+
+                      {/* Images */}
+                      {images.map((image, i) => (
+                        <Chat.Message.Content.Image
+                          key={i}
+                          url={image.uri}
+                          authToken={mcp.token}
+                        />
+                      ))}
+
+                      {/* Files */}
+                      {files.map((file, i) => (
+                        <Chat.Message.Content.File key={i} file={file} />
+                      ))}
+
+                      {/* Text (markdown) */}
+                      {text.map((c, i) => (
+                        <Chat.Message.Content.Text
+                          key={i}
+                          text={c.replaceAll(/<think>.*?<\/think>/gs, "")}
+                        />
+                      ))}
+
+                      {/* Tool calls */}
+                      {m.tool_calls?.map((_tc, i) => {
+                        const tcId = _tc.id || i.toString();
+                        const tc = {
+                          ..._tc,
+                          id: tcId,
+                          info: tools.getCallInfo(tcId),
+                        };
+                        const toolInfo = mcp.getToolInfo(tc.name);
+
+                        const title = toolInfo
+                          ? `${toolInfo.name} - ${mcp.name} (MCP Server)`
+                          : tc.name;
+                        const description = toolInfo?.description;
+                        const autoconfirm =
+                          (settings.autoApproveMcpTools ||
+                            tools.isAllowedForSession(tc.name)) &&
+                          !tc.info;
+
+                        return (
+                          <Chat.Message.ToolCall
+                            key={tc.id}
+                            title={title}
+                            description={description}
+                            status={tc.info?.status ?? "init"}
+                            input={tc.info?.input ?? _tc.args}
+                            output={tc.info?.output ?? tc.info?.error}
+                            autoconfirm={autoconfirm}
+                            onConfirm={(allowForSession) => {
+                              callTool(tc);
+                              if (allowForSession) tools.allowForSession(tc.name);
+                            }}
+                            onCancel={() => cancelToolCall(tc)}
+                          />
+                        );
+                      })}
+
+                      {/* Actions at the bottom */}
+                      {m.role === "assistant" && isLastMessage && isIdle && (
+                        <Chat.Message.Actions
+                          style={{ marginVertical: 16 }}
+                          onCopyAnswer={() => {
+                            Clipboard.setStringAsync(text.join("\n").trim());
+                          }}
+                          onStartAgain={handleNewKmSession}
+                        />
+                      )}
+                    </Chat.Message>
+                  );
+                })}
+                {isGenerating && <Chat.Thinking />}
+              </Chat.Messages>
+            </Container>
+          )}
 
           <View
             style={[
