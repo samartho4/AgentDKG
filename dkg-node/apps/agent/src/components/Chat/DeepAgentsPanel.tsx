@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from "react-native";
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Linking, Platform } from "react-native";
 
 import useColors from "@/hooks/useColors";
 import Button from "@/components/Button";
@@ -36,6 +36,7 @@ type DeepAgentsMeta = {
   toolsUsed?: string[];
   toolExecutions?: ToolExecution[];
   subagentsUsed?: string[];
+  trustSignals?: any[];
   // present only when type === "interrupt"
   actionRequests?: any[];
   reviewConfigs?: any[];
@@ -341,6 +342,47 @@ export default function DeepAgentsPanel({ messages, isOpen, onToggle, onDecideIn
               </View>
             </View>
           )}
+
+          {/* Trust metrics from x402_trust_score */}
+          {meta?.trustSignals && meta.trustSignals.length > 0 && (
+            <View style={styles.section}>
+              <Text style={[styles.sectionTitle, { color: colors.placeholder }]}>
+                🔐 Trust & Tokenomics (x402)
+              </Text>
+              <View style={{ marginTop: 4 }}>
+                {meta.trustSignals.map((ts: any, idx: number) => (
+                  <Text key={idx} style={{ color: colors.text, fontSize: 12 }}>
+                    • {ts.ual} — score: {(ts.score ?? 0).toFixed(2)} — {ts.reason}
+                  </Text>
+                ))}
+              </View>
+            </View>
+          )}
+
+          {/* x402 Trust Portal (human-in-the-loop trust layer) */}
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, { color: colors.placeholder }]}>
+              🧱 Trust Layer
+            </Text>
+            <Button
+              color="secondary"
+              flat
+              text="Open x402 Trust Portal"
+              onPress={() => {
+                const url = "https://www.x402.org/protected";
+                if (Platform.OS === "web" && typeof window !== "undefined") {
+                  (window as any).open(url, "_blank");
+                } else {
+                  Linking.openURL(url).catch((err) =>
+                    console.error("Failed to open x402 portal", err)
+                  );
+                }
+              }}
+            />
+            <Text style={{ color: colors.secondary, fontSize: 11, marginTop: 4 }}>
+              Optional: open the x402 portal to inspect or simulate staking / trust economics.
+            </Text>
+          </View>
 
           {/* Pending actions list (very simple text view for now) */}
           {meta?.type === "interrupt" && meta?.actionRequests && (
