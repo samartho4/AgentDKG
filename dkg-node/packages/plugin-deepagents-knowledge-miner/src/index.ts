@@ -1,49 +1,60 @@
 import { defineDkgPlugin } from "@dkg/plugins";
 import { z } from "zod";
-import { createKnowledgeMinerAgent, defaultThreadConfig } from "./agent";
+import {
+  createKnowledgeMinerAgent,
+  defaultThreadConfig,
+} from "./agent";
 
-// Progress publishing - will be injected by the server
+// Progress publishing – injected by the server (SSE)
 let publishProgress: ((sessionId: string, update: any) => void) | null = null;
 
 // Export function to set the progress publisher (called by server on startup)
-export function setProgressPublisher(publisher: (sessionId: string, update: any) => void) {
+export function setProgressPublisher(
+  publisher: (sessionId: string, update: any) => void,
+) {
   publishProgress = publisher;
-  console.log("✅ Progress publisher configured for DeepAgents");
+  console.log("✅ Progress publisher configured for DeepAgents knowledge miner");
 }
 
 export default defineDkgPlugin((ctx, mcp) => {
-  // Register knowledge_miner_run tool
+  // ---------------------------------------------------------------------------
+  // knowledge_miner_run
+  // ---------------------------------------------------------------------------
   mcp.registerTool(
     "knowledge_miner_run",
     {
       title: "Knowledge Miner - Run",
       description:
-        "IMPORTANT: Use this tool when user asks to research, mine knowledge, or gather information about any topic. This starts an autonomous deep agents knowledge mining session that will search the web, analyze data, and create structured knowledge assets. Returns a thread_id for resuming.",
+        "Start an autonomous DeepAgents knowledge mining session that searches the web, uses DKG tools, and writes structured knowledge into /memories. Returns a thread_id and debug info.",
       inputSchema: {
         task: z
           .string()
           .describe(
-            "High-level task description, e.g. 'Research TSMC supply chain risks and create KAs'",
+            "High-level task description, e.g. 'Search web for blockchain supply chain, find related KAs, link and score them'.",
           ),
         domain: z
           .string()
           .optional()
-          .describe("Optional domain tag like 'supply-chain' or 'healthcare'"),
+          .describe(
+            "Optional domain tag like 'supply-chain', 'healthcare', etc.",
+          ),
         sessionId: z
           .string()
           .optional()
-          .describe("Optional session ID for progress tracking via SSE"),
+          .describe(
+            "Optional session ID for progress tracking via SSE (/progress?sessionId=...)",
+          ),
       },
     },
     async ({ task, domain, sessionId }) => {
       try {
-        console.log('📝 Creating knowledge miner agent...');
+        console.log("📝 Creating knowledge miner agent...");
         const agent = createKnowledgeMinerAgent(ctx);
-        console.log('✅ Agent created successfully');
-        
-        console.log('⚙️  Creating thread config...');
+        console.log("✅ Agent created successfully");
+
+        console.log("⚙️  Creating DeepAgents thread config...");
         const config = defaultThreadConfig();
-        console.log('✅ Config created:', config);
+        console.log("✅ Config created:", config);
 
         // Build initial user message
         let userMessage = task;
@@ -51,167 +62,220 @@ export default defineDkgPlugin((ctx, mcp) => {
           userMessage += `\n\nDomain: ${domain}`;
         }
 
-        // Use invoke with timeout
         const progressUpdates: string[] = [];
         let stepCount = 0;
-        progressUpdates.push('🚀 Starting knowledge mining session...\n');
-        
-        // Publish initial status
+        progressUpdates.push("🚀 Starting knowledge mining session...\n");
+
+        // Initial SSE status
         if (sessionId && publishProgress) {
           publishProgress(sessionId, {
-            type: 'status',
-            message: '🚀 Starting knowledge mining session...',
+            type: "status",
+            message: "🚀 Starting knowledge mining session...",
             progress: 0,
           });
         }
 
-        console.log('🔍 Invoking agent with task:', userMessage);
-        
-        const result: any = await agent.invoke(
-          { messages: [{ role: "user", content: userMessage }] },
-          config,
-        ).then(res => {
-          console.log('✅ Agent invocation completed');
-          console.log('📦 Result structure:', JSON.stringify(res, null, 2).substring(0, 500));
-          return res;
-        }).catch(err => {
-          console.error('❌ Agent invocation error:', err);
-          throw err;
-        });
-        
-        console.log('🎯 Result received, processing...');
+        console.log("🔍 Invoking agent with task:", userMessage);
 
-        // Fake loop for compatibility with existing code
+        let result: any;
+        try {
+          result = await agent.invoke(
+            { messages: [{ role: "user", content: userMessage }] },
+            config,
+          );
+          console.log("✅ Agent invocation completed");
+          try {
+            console.log(
+              "📦 Result structure (truncated):",
+              JSON.stringify(result, null, 2).substring(0, 500),
+            );
+          } catch {
+            // ignore stringify errors
+          }
+        } catch (err: any) {
+          console.error("❌ Agent invocation error:", err);
+          
+          // Handle specific error types gracefully
+          if (err?.lc_error_code === "GRAPH_RECURSION_LIMIT") {
+            const errorMsg = "Knowledge miner hit its step limit. Try again with a narrower task, or an admin should increase recursionLimit.";
+            
+            if (sessionId && publishProgress) {
+              publishProgress(sessionId, {
+                type: "error",
+                message: errorMsg,
+                error: errorMsg,
+              });
+            }
+            
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: `⚠️ ${errorMsg}\n\nTechnical details: ${err.message}`,
+                },
+              ],
+            };
+          }
+          
+          // Re-throw other errors
+          throw err;
+        }
+
+        console.log("🎯 Result received, processing...");
+
+        // We treat the final DeepAgents state as a single "chunk"
         for await (const chunk of [result]) {
           stepCount++;
-          
-          // Process the result chunk
-          if (chunk && typeof chunk === 'object') {
-            
-            // Extract current state
+
+          if (chunk && typeof chunk === "object") {
+            // DeepAgents state is usually directly in the result
             const currentState: any = Object.values(chunk)[0] || chunk;
             const messages = currentState.messages || [];
             const todos = currentState.todos || [];
             const files = currentState.files || {};
-            
-            // Extract current tool being executed
-            const lastMsg: any = messages.length > 0 ? messages[messages.length - 1] : null;
-            
+
+            const lastMsg: any =
+              messages.length > 0 ? messages[messages.length - 1] : null;
+
             if (lastMsg?.tool_calls && lastMsg.tool_calls.length > 0) {
               for (const tc of lastMsg.tool_calls) {
-                const actionDesc = 
-                  tc.name === 'internet_search' ? `🌐 Searching web for: "${tc.args?.query}"` :
-                  tc.name === 'dkg_search_knowledge_assets' ? `🔗 Discovering knowledge: "${tc.args?.query}"` :
-                  tc.name === 'dkg_link_knowledge_assets' ? `🔗 Linking knowledge assets` :
-                  tc.name === 'write_file' ? `💾 Saving to: ${tc.args?.path}` :
-                  tc.name === 'write_todos' ? `📋 Planning tasks` :
-                  tc.name === 'task' ? `🤖 Delegating: "${tc.args?.task}"` :
-                  `🔧 Using ${tc.name}`;
-                
+                const actionDesc =
+                  tc.name === "internet_search"
+                    ? `🌐 Searching web for: "${tc.args?.query}"`
+                    : tc.name === "dkg_get"
+                    ? `🔎 Fetching KA from DKG: "${tc.args?.ual}"`
+                    : tc.name === "dkg_create"
+                    ? "� Publigshing Knowledge Asset to DKG"
+                    : tc.name === "x402_trust_score"
+                    ? `🧮 Computing x402 trust score for: "${tc.args?.ual}"`
+                    : tc.name === "write_file"
+                    ? `💾 Saving to: ${tc.args?.path}`
+                    : tc.name === "write_todos"
+                    ? "📋 Planning tasks"
+                    : tc.name === "task"
+                    ? `🤖 Delegating subagent task: "${tc.args?.task}"`
+                    : `🔧 Using ${tc.name}`;
+
                 progressUpdates.push(`Step ${stepCount}: ${actionDesc}`);
-                
-                // Publish tool start via SSE
+
                 if (sessionId && publishProgress) {
+                  const todosSlim = todos.map((t: any) => ({
+                    content: t.content,
+                    status: t.status,
+                  }));
+
                   publishProgress(sessionId, {
-                    type: 'tool_start',
+                    type: "tool_start",
                     tool: tc.name,
                     message: actionDesc,
                     input: tc.args,
                     progress: Math.min(90, stepCount * 10),
-                    todos: todos.map((t: any) => ({ content: t.content, status: t.status })),
+                    todos: todosSlim,
                     filesCount: Object.keys(files).length,
                   });
                 }
               }
             }
-            
-            // Check for tool results
-            if (lastMsg?.role === 'tool') {
-              const toolName = messages.find((m: any) => 
-                m.tool_calls?.some((tc: any) => tc.id === lastMsg.tool_call_id)
-              )?.tool_calls?.find((tc: any) => tc.id === lastMsg.tool_call_id)?.name;
-              
+
+            // Tool completion
+            if (lastMsg?.role === "tool") {
+              const toolName = messages
+                .find((m: any) =>
+                  m.tool_calls?.some(
+                    (tc: any) => tc.id === lastMsg.tool_call_id,
+                  ),
+                )
+                ?.tool_calls?.find(
+                  (tc: any) => tc.id === lastMsg.tool_call_id,
+                )?.name;
+
               if (toolName && sessionId && publishProgress) {
+                const todosSlim = todos.map((t: any) => ({
+                  content: t.content,
+                  status: t.status,
+                }));
+
                 publishProgress(sessionId, {
-                  type: 'tool_complete',
+                  type: "tool_complete",
                   tool: toolName,
-                  output: typeof lastMsg.content === 'string' 
-                    ? lastMsg.content.substring(0, 500) 
-                    : JSON.stringify(lastMsg.content).substring(0, 500),
-                  todos: todos.map((t: any) => ({ content: t.content, status: t.status })),
+                  output:
+                    typeof lastMsg.content === "string"
+                      ? lastMsg.content.substring(0, 500)
+                      : JSON.stringify(lastMsg.content).substring(0, 500),
+                  todos: todosSlim,
                   filesCount: Object.keys(files).length,
                 });
               }
             }
           }
         }
-        
+
         if (!result) {
-          throw new Error('Agent did not produce any result');
+          throw new Error("Agent did not produce any result");
         }
-        
-        progressUpdates.push('\n✅ Knowledge mining session complete!');
-        
-        // Publish completion
+
+        progressUpdates.push("\n✅ Knowledge mining session complete!");
+
         if (sessionId && publishProgress) {
           publishProgress(sessionId, {
-            type: 'complete',
-            message: '✅ Knowledge mining session complete!',
+            type: "complete",
+            message: "✅ Knowledge mining session complete!",
             progress: 100,
           });
         }
 
-        // Extract thread_id and response
+        // Extract DeepAgents state
         const threadId = config.configurable.thread_id;
-        const lastMessage = result.messages && result.messages.length > 0 
-          ? result.messages[result.messages.length - 1] 
-          : { content: "No response generated" };
+        const resultMessages = result.messages || [];
+        const lastMessage =
+          resultMessages.length > 0
+            ? resultMessages[resultMessages.length - 1]
+            : { content: "No response generated" };
 
-        // Extract DeepAgents metadata from the result state
-        // DeepAgents returns state with todos (array) and files (object)
         const todos = (result as any).todos || [];
         const files = (result as any).files || {};
-        
-        // Extract memory files (those in /memories/ directory)
-        const memoriesFiles = Object.keys(files).filter((f: string) => f.startsWith('/memories/'));
-        
-        // Format todos with status for display
+
+        const memoriesFiles = Object.keys(files).filter((f) =>
+          f.startsWith("/memories/"),
+        );
+
         const todosWithStatus = todos.map((t: any) => ({
           content: t.content,
-          status: t.status || 'pending'
+          status: t.status || "pending",
         }));
-        
-        // Extract detailed tool execution info with outputs
+
+        // Extract tool usage & subagents
         const toolExecutions: any[] = [];
         const toolsUsed = new Set<string>();
         const subagentsUsed = new Set<string>();
-        
-        // Process messages to extract tool calls and their results
-        for (let i = 0; i < result.messages.length; i++) {
-          const msg: any = result.messages[i];
-          
+
+        for (let i = 0; i < resultMessages.length; i++) {
+          const msg: any = resultMessages[i];
+
           if (msg.tool_calls && msg.tool_calls.length > 0) {
             for (const tc of msg.tool_calls) {
               toolsUsed.add(tc.name);
-              
-              // Track subagent usage
-              if (tc.name === 'task') {
-                const taskName = tc.args?.task || 'unnamed-task';
+
+              if (tc.name === "task") {
+                const taskName = tc.args?.task || "unnamed-task";
                 subagentsUsed.add(taskName);
               }
-              
-              // Find the corresponding tool result in next messages
+
               let toolResult: string | null = null;
-              for (let j = i + 1; j < result.messages.length; j++) {
-                const nextMsg: any = result.messages[j];
-                if (nextMsg.role === 'tool' && nextMsg.tool_call_id === tc.id) {
-                  toolResult = typeof nextMsg.content === 'string' 
-                    ? nextMsg.content 
-                    : JSON.stringify(nextMsg.content);
+              for (let j = i + 1; j < resultMessages.length; j++) {
+                const nextMsg: any = resultMessages[j];
+                if (
+                  nextMsg.role === "tool" &&
+                  nextMsg.tool_call_id === tc.id
+                ) {
+                  toolResult =
+                    typeof nextMsg.content === "string"
+                      ? nextMsg.content
+                      : JSON.stringify(nextMsg.content);
                   break;
                 }
               }
-              
+
               toolExecutions.push({
                 name: tc.name,
                 input: tc.args,
@@ -221,49 +285,95 @@ export default defineDkgPlugin((ctx, mcp) => {
             }
           }
         }
-        
-        // Build metadata block for DeepAgentsPanel
-        const metadata = {
+
+        // Extract trust signals from x402_trust_score outputs
+        const trustSignals: any[] = [];
+        for (const exec of toolExecutions) {
+          if (exec.name === "x402_trust_score" && exec.output) {
+            try {
+              const parsed = JSON.parse(exec.output);
+              if (parsed && parsed.kind === "x402_trust_signal") {
+                trustSignals.push(parsed);
+              }
+            } catch {
+              // ignore parse errors; leave exec.output in workflow view only
+            }
+          }
+        }
+
+        // Metadata for DeepAgentsPanel (right workspace)
+        const metaForPanel = {
           threadId,
           type: "result",
           todos: todosWithStatus.length > 0 ? todosWithStatus : undefined,
-          todosPreview: todosWithStatus.length > 0 
-            ? `${todosWithStatus.filter((t: any) => t.status === 'completed').length}/${todosWithStatus.length} completed` 
-            : undefined,
-          memoriesFiles: memoriesFiles.length > 0 ? memoriesFiles : undefined,
-          allFiles: Object.keys(files).length > 0 ? Object.keys(files) : undefined,
+          todosPreview:
+            todosWithStatus.length > 0
+              ? `${todosWithStatus.filter((t: any) => t.status === "completed").length}/${todosWithStatus.length} completed`
+              : undefined,
+          memoriesFiles:
+            memoriesFiles.length > 0 ? memoriesFiles : undefined,
+          allFiles:
+            Object.keys(files).length > 0 ? Object.keys(files) : undefined,
           filesContent: files,
-          toolsUsed: Array.from(toolsUsed).length > 0 ? Array.from(toolsUsed) : undefined,
-          toolExecutions: toolExecutions.length > 0 ? toolExecutions : undefined,
-          subagentsUsed: Array.from(subagentsUsed).length > 0 ? Array.from(subagentsUsed) : undefined,
+          toolsUsed:
+            Array.from(toolsUsed).length > 0
+              ? Array.from(toolsUsed)
+              : undefined,
+          toolExecutions:
+            toolExecutions.length > 0 ? toolExecutions : undefined,
+          subagentsUsed:
+            Array.from(subagentsUsed).length > 0
+              ? Array.from(subagentsUsed)
+              : undefined,
+          trustSignals:
+            trustSignals.length > 0 ? trustSignals : undefined,
         };
 
-        // Build progress log
-        const progressLog = progressUpdates.length > 0 
-          ? `\n\n<details>\n<summary>📊 Execution Log (${stepCount} steps)</summary>\n\n${progressUpdates.join('\n')}\n</details>`
-          : '';
+        // Progress log for human-readable trace
+        const progressLog =
+          progressUpdates.length > 0
+            ? `\n\n<details>\n<summary>📊 Execution Log (${stepCount} steps)</summary>\n\n${progressUpdates.join(
+                "\n",
+              )}\n</details>`
+            : "";
 
-        // Extract domain from task or use default
-        const taskDomain = domain || 'general';
-        
-        // Build debug payload for UI
+        const taskDomain = domain || "general";
+
+        // Debug payload for ChatPage → KnowledgeMinerPanel (right side)
         const debugPayload = {
-          kind: "knowledge_miner_session",
+          kind: "knowledge_miner_session" as const,
           sessionId: threadId,
           domain: taskDomain,
           task,
           todos: todosWithStatus,
           workspacePaths: Object.keys(files),
-          subagentsUsed: Array.from(subagentsUsed).map(name => ({ name })),
-          trustSignals: [], // TODO: extract from tool executions
-          mainReportPath: memoriesFiles.length > 0 ? memoriesFiles[0] : undefined,
+          subagentsUsed: Array.from(subagentsUsed).map((name) => ({ name })),
+          trustSignals,
+          mainReportPath:
+            memoriesFiles.length > 0 ? memoriesFiles[0] : undefined,
         };
+
+        const lastMessageText =
+          typeof lastMessage.content === "string"
+            ? lastMessage.content
+            : JSON.stringify(lastMessage.content, null, 2);
+
+        // DeepAgents meta block for DeepAgentsPanel (parsed by ```deepagents-meta ... ```)
+        const deepAgentsMetaBlock =
+          "```deepagents-meta\n" +
+          JSON.stringify(metaForPanel, null, 2) +
+          "\n```";
 
         return {
           content: [
             {
               type: "text",
-              text: `${progressLog}\n\n${lastMessage.content}`,
+              text:
+                progressLog +
+                "\n\n" +
+                lastMessageText +
+                "\n\n" +
+                deepAgentsMetaBlock,
             },
           ] as any,
           _meta: {
@@ -271,20 +381,23 @@ export default defineDkgPlugin((ctx, mcp) => {
           },
         };
       } catch (err: any) {
-        // Publish error via SSE
+        console.error("❌ Error in knowledge_miner_run:", err);
+
         if (sessionId && publishProgress) {
           publishProgress(sessionId, {
-            type: 'error',
+            type: "error",
             message: `Error: ${err?.message ?? String(err)}`,
             error: err?.message ?? String(err),
           });
         }
-        
+
         return {
           content: [
             {
               type: "text",
-              text: `Error running knowledge miner: ${err?.message ?? String(err)}`,
+              text: `Error running knowledge miner: ${
+                err?.message ?? String(err)
+              }`,
             },
           ],
           isError: true,
@@ -293,32 +406,37 @@ export default defineDkgPlugin((ctx, mcp) => {
     },
   );
 
-  // Register knowledge_miner_resume tool
+  // ---------------------------------------------------------------------------
+  // knowledge_miner_resume
+  // ---------------------------------------------------------------------------
   mcp.registerTool(
     "knowledge_miner_resume",
     {
       title: "Knowledge Miner - Resume",
       description:
-        "Resume a paused knowledge mining session with human decisions on pending actions.",
+        "Resume a paused knowledge mining session with human decisions on pending actions (interrupts).",
       inputSchema: {
-        threadId: z.string().describe("Thread ID from a previous run"),
+        threadId: z.string().describe("Thread ID from a previous run."),
         decisions: z
           .array(
             z.object({
               type: z
                 .enum(["approve", "reject", "edit"])
-                .describe("Decision type for the pending action"),
+                .describe("Decision type for the pending action."),
               editedArgs: z
                 .record(z.any())
                 .optional()
-                .describe("If type=edit, provide modified arguments"),
+                .describe(
+                  "If type=edit, provide modified arguments for the action.",
+                ),
             }),
           )
-          .describe("Array of decisions matching pending actions in order"),
+          .describe("Array of decisions matching pending actions in order."),
       },
     },
     async ({ threadId, decisions }) => {
       try {
+        console.log("🔁 Resuming knowledge miner thread:", threadId);
         const agent = createKnowledgeMinerAgent(ctx);
         const config = {
           configurable: {
@@ -326,27 +444,37 @@ export default defineDkgPlugin((ctx, mcp) => {
           },
         };
 
-        // Resume with decisions
-        const result = await agent.invoke({ decisions }, config);
+        const result: any = await agent.invoke({ decisions }, config);
 
-        const lastMessage = result.messages && result.messages.length > 0 
-          ? result.messages[result.messages.length - 1] 
-          : { content: "No response generated" };
+        const resultMessages = result.messages || [];
+        const lastMessage =
+          resultMessages.length > 0
+            ? resultMessages[resultMessages.length - 1]
+            : { content: "No response generated" };
+
+        const lastMessageText =
+          typeof lastMessage.content === "string"
+            ? lastMessage.content
+            : JSON.stringify(lastMessage.content, null, 2);
 
         return {
           content: [
             {
               type: "text",
-              text: `Knowledge Miner resumed.\n\n${lastMessage.content}`,
+              text: `Knowledge Miner resumed.\n\n${lastMessageText}`,
             },
           ],
         };
       } catch (err: any) {
+        console.error("❌ Error in knowledge_miner_resume:", err);
+
         return {
           content: [
             {
               type: "text",
-              text: `Error resuming knowledge miner: ${err?.message ?? String(err)}`,
+              text: `Error resuming knowledge miner: ${
+                err?.message ?? String(err)
+              }`,
             },
           ],
           isError: true,
