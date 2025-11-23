@@ -2,132 +2,280 @@ import { v4 as uuidv4 } from "uuid";
 import {
   createDeepAgent,
   type SubAgent,
-  CompositeBackend,
   StateBackend,
-  StoreBackend,
 } from "deepagents";
+
 import {
   makeInternetSearchTool,
-  makeDkgSearchKAsTool,
-  makeDkgLinkKAsTool,
+  makeDkgGetTool,
+  makeDkgCreateTool,
   makeX402TrustScoreTool,
+  type DkgPluginContext,
 } from "./tools";
 
-// Type for the plugin context
-type DkgPluginContext = {
-  dkg?: any;
-  blob?: any;
-};
+/**
+ * Global token discipline.
+ * This is intentionally tiny to stay well under the
+ * Anthropic 30k input-tokens / min limit.
+ */
+const TOKEN_BUDGET_NOTE = `Be aggressively concise.
+- Keep each message ≲ 200 tokens.
+- Never repeat the task or earlier instructions.
+- Never paste long web pages or raw JSON; only short summaries.
+- Use bullets and short paragraphs.`;
+
+// --------------------------------------------------------
+// createKnowledgeMinerAgent
+// --------------------------------------------------------
 
 export function createKnowledgeMinerAgent(ctx: DkgPluginContext) {
   const internetSearch = makeInternetSearchTool(ctx);
-  const dkgSearchKAs = makeDkgSearchKAsTool(ctx);
-  const dkgLinkKAs = makeDkgLinkKAsTool(ctx);
+  const dkgGet = makeDkgGetTool(ctx);
+  const dkgCreate = makeDkgCreateTool(ctx);
   const x402TrustScore = makeX402TrustScoreTool();
 
-  // ---------- Subagents ----------
-  const discoverySubagent: SubAgent = {
-    name: "knowledge_discovery",
-    description:
-      "Specialized in planning and research. Uses web_search and filesystem to gather raw material.",
-    systemPrompt: `You are the *Discovery* subagent in a knowledge-mining pipeline.
-Your responsibilities:
-- Write a clear to-do list with the write_todos tool before deep work.
-- Use the internet_search tool to gather diverse, high-quality sources.
-- Save raw notes and source lists under:
-  - /memories/research/sources.txt
-  - /memories/research/notes.txt
-- Avoid final conclusions; focus on breadth and evidence collection.`,
-    tools: [internetSearch as any],
-  };
-
+  /**
+   * SUBAGENT 1: ENRICHMENT
+   *
+   * Responsibilities
+   * - Take a short task (and often a UAL embedded in the task).
+   * - If a UAL is present, call dkg_get ONCE to inspect it.
+   * - Use a FEW web searches to cross-check facts.
+   * - Produce 2 files ONLY:
+   *     /memories/knowledge/{{domain}}/report.md
+   *     /memories/knowledge/{{domain}}/triples.md
+   */
   const enrichmentSubagent: SubAgent = {
     name: "knowledge_enrichment",
     description:
-      "Connects new insights to existing Knowledge Assets, proposes UAL links and enrichment.",
-    systemPrompt: `You are the *Enrichment* subagent.
-Given draft findings and existing DKG Knowledge Assets:
-- Call dkg_search_kas to find high-quality, relevant KAs.
-- Propose link structures and UALs connecting new knowledge to these assets.
-- Write your linking plan to /memories/knowledge/linking_plan.md as markdown.
-- Output a concise JSON summary with fields:
-  - new_asset_candidates: [...]
-  - linked_uals: [...]
-  - justification: "why these links make sense"`,
-    tools: [dkgSearchKAs as any, dkgLinkKAs as any],
+      "Inspect one DKG asset plus web sources and write a short report + RDF-style triples.",
+    systemPrompt: `${TOKEN_BUDGET_NOTE}
+
+You are the ENRICHMENT subagent.
+
+Goal:
+- For a single task + optional UAL, combine DKG data and a few web sources
+  into a compact report and a small set of RDF-style triples.
+
+Very important rules:
+- NEVER call write_todos or any todo-related tools.
+- Use only these tools here:
+  • dkg_get
+  • internet_search
+  • read_file / write_file (filesystem)
+- Keep tool calls minimal and focused.
+
+Assume optionally that the main agent gives you:
+- a domain string like "supply-chain" or "general".
+- a UAL embedded in the task text if available.
+
+Workflow (single pass):
+
+1) Parse domain and UAL
+   - If the user task or earlier messages clearly contain a DKG UAL, note it.
+   - If no UAL is obvious, you may skip dkg_get.
+
+2) DKG inspection
+   - If you have a UAL, call dkg_get AT MOST ONCE to see its JSON.
+   - Do NOT paste raw JSON into messages; summarize in 5–10 bullets.
+
+3) Web cross-check
+   - Call internet_search up to 3 times.
+   - For each search, pull only the key facts + 1–3 useful URLs.
+
+4) Write TWO files only:
+   - /memories/knowledge/{{domain}}/report.md
+   - /memories/knowledge/{{domain}}/triples.md
+
+   Where {{domain}} is:
+   - the explicit domain from the task, or
+   - "general" if not given.
+
+   report.md structure (keep it tight):
+   - Title line
+   - "Key facts" (bullets, grouped logically)
+   - "Supply / risk / impact" (if relevant)
+   - "Evidence (URLs)" – a short bullet list of URLs
+   - "Open questions" – at most 3 bullets
+
+   triples.md:
+   - 5–20 RDF-style triples, one per line, e.g.
+     subject predicate object .
+
+5) At the END of report.md, append a tiny JSON block:
+   \`\`\`json
+   { "uals": ["..."], "main_ual": "..." }
+   \`\`\`
+
+Constraints:
+- Use EACH file path at most once with write_file (overwrite is fine).
+- Keep each file ≲ 400 tokens.
+- Do not create any other files.`,
+    tools: [dkgGet as any, internetSearch as any],
   };
 
+  /**
+   * SUBAGENT 2: VALIDATION
+   *
+   * Responsibilities
+   * - Read report.md + triples.md for the same domain.
+   * - Use x402_trust_score a couple of times as a simulated signal.
+   * - Append a compact validation section + final JSON block to report.md.
+   */
   const validationSubagent: SubAgent = {
     name: "knowledge_validation",
     description:
-      "Stress-tests findings, estimates confidence, and triggers trust / tokenomics tools.",
-    systemPrompt: `You are the *Validation* subagent.
-Responsibilities:
-- Challenge assumptions, look for failure modes and conflicting evidence.
-- Assign confidence scores (0-1) per key claim.
-- Optionally call x402_trust_score to compute an economic/credibility signal.
-- Save a structured critique in /memories/knowledge/validation_notes.md.`,
+      "Read report + triples, call x402_trust_score sparingly, and append a compact validation summary.",
+    systemPrompt: `${TOKEN_BUDGET_NOTE}
+
+You are the VALIDATION subagent.
+
+Goal:
+- Turn the enrichment output into a small validation layer with a single
+  global trust score.
+
+Inputs:
+- /memories/knowledge/{{domain}}/report.md
+- /memories/knowledge/{{domain}}/triples.md
+
+(Use "general" for {{domain}} if no domain is given.)
+
+Rules:
+- NEVER call write_todos.
+- Use tools:
+  • read_file / write_file
+  • x402_trust_score
+- Keep all validation text very short and concrete.
+
+Single validation pass:
+
+1) Read files
+   - Use read_file to load report.md and triples.md.
+   - Identify 3–7 key claims and any UAL(s) mentioned in the JSON block.
+
+2) Call x402_trust_score
+   - Choose at most 2 UALs (or 1 if only one exists).
+   - Call x402_trust_score once per chosen UAL with a short "reason".
+   - Remember: this is a SIMULATED trust signal; treat it as one input
+     among others (web evidence, internal consistency, etc.).
+
+3) Compute a global_trust_score in [0, 1]
+   - Blend:
+     • strength of evidence from report + triples,
+     • simulated x402 scores,
+     • any obvious gaps or concerns.
+   - You do not need complex math; simple reasoning is enough.
+
+4) APPEND to report.md (do NOT create new files):
+   - A "Validation summary" section:
+     • Bullet list of well-supported claims.
+     • Bullet list of weak / partially supported points.
+   - A short line like:
+     "Global trust score: 0.82 (high confidence in core facts, moderate in economic figures)."
+
+5) At the very end of report.md, append a JSON block:
+   \`\`\`json
+   { "global_trust_score": 0.0-1.0 }
+   \`\`\`
+
+Keep the whole validation addition ≲ 250 tokens.
+Do not overwrite the earlier report content; only append.`,
     tools: [x402TrustScore as any],
   };
 
-  // ---------- Long-term memory backend (/memories/) ----------
-  // Use StateBackend for all paths since we don't have a persistent store configured
-  // Files will be stored in agent state (ephemeral per-thread)
+  // -----------------------------
+  // Memory backend
+  // -----------------------------
+
   const backend = (config: { state: unknown; store?: any }) =>
     new StateBackend(config);
 
-  const systemPrompt = `You are the *Knowledge Miner* supervising a Deep Agent knowledge-mining pipeline.
+  // -----------------------------
+  // Main Knowledge Miner agent
+  // -----------------------------
 
-High-level phases:
-1. PLAN with a to-do list using write_todos.
-2. DISCOVER with the knowledge_discovery subagent and internet_search.
-3. ENRICH with the knowledge_enrichment subagent, linking to existing KAs via UALs.
-4. VALIDATE with the knowledge_validation subagent and x402_trust_score.
-5. PUBLISH: create / update DKG Knowledge Assets and write final report.
+  const systemPrompt = `${TOKEN_BUDGET_NOTE}
 
-Filesystem and workspace:
-- Use /memories/research/ for raw sources and notes.
-- Use /memories/knowledge/<domain>/ for refined reports, link plans, and validation notes.
-- These paths are long-term memory and must be reused across sessions.
+You are the MAIN KNOWLEDGE MINER.
 
-After validation, call x402_trust_score for the most important KA UALs.
-Include a "Trust & Tokenomics" section in the final report that explains:
-- Which KAs were scored
-- Their scores and quick interpretation
-- How these scores influence overall confidence
+You orchestrate TWO subagents inside a DeepAgents graph:
+- "knowledge_enrichment"
+- "knowledge_validation"
 
-Always end by:
-- Writing a final markdown report to /memories/knowledge/<domain>/<slug>-research.md
-- Returning a clean natural-language summary for the user.
-- Including in your text the path to the main report file.`;
+Your job is to run ONE clean pipeline for each user task:
+  ENRICHMENT → VALIDATION → (optional) PUBLISH
 
-  // Agent with DeepAgents features (todos, memory) but optimized for speed
+Key ideas:
+- The user task may include a DKG UAL and a domain string.
+- You should keep everything focused on that ONE asset / topic.
+- Use the existing tools; do NOT invent new ones.
+
+Strict behavior for each run:
+
+1) Domain + UAL parsing
+   - If the user or tool input mentions "Domain: X", treat X as the domain.
+   - Otherwise use "general".
+   - If a UAL like "did:dkg:..." appears, keep it as the main UAL.
+
+2) Subagent sequence (IMPORTANT)
+   - Delegate to "knowledge_enrichment" exactly ONCE using the task tool.
+   - After enrichment completes, delegate to "knowledge_validation" exactly ONCE.
+   - NEVER call the same subagent twice.
+   - NEVER call write_todos. Plan inline in natural language instead.
+
+3) Optional publishing
+   - ONLY if the task explicitly asks to create or update a Knowledge Asset:
+     • Build a small JSON-LD object summarizing the validated facts.
+     • Call dkg_create ONCE with that JSON-LD (privacy defaults to "private"
+       unless the request clearly says "public").
+   - If the task does not mention publishing, do NOT call dkg_create.
+
+Token + tool discipline:
+- Keep total tool calls (including subagents) as low as you reasonably can
+  (aim for ≲ 15 per run).
+- Always summarize tool results instead of dumping them.
+- Prefer re-using:
+  • /memories/knowledge/{{domain}}/report.md
+  • /memories/knowledge/{{domain}}/triples.md
+
+Final answer to the user:
+- 2–4 short paragraphs summarizing:
+  • key confirmed facts,
+  • any partially validated items,
+  • the final global_trust_score in [0,1] with a plain-language label
+    (e.g., "high", "medium", "low" confidence).
+- Mention the main report path so the UI can open it, e.g.
+  "/memories/knowledge/supply-chain/report.md".`;
+
   const agent = createDeepAgent({
-    systemPrompt: `You are a Knowledge Miner. When given a research task:
-
-1. PLAN: Use write_todos to create a simple 2-3 step plan
-2. RESEARCH: Use internet_search ONCE with a focused query
-3. DOCUMENT: Save your findings to /memories/knowledge/<domain>/report.md
-4. RESPOND: Provide a concise summary (2-3 paragraphs)
-
-IMPORTANT: 
-- Only make ONE internet search call
-- Keep todos simple (2-3 items max)
-- Save one report file to /memories/knowledge/<domain>/report.md
-- Be fast and concise`,
-    tools: [internetSearch],
-    model: "claude-sonnet-4-20250514",
+    systemPrompt,
+    tools: [internetSearch, dkgGet, dkgCreate, x402TrustScore] as any,
     backend,
+    subagents: [enrichmentSubagent, validationSubagent],
+
+    interruptOn: {
+      // Keep this simple; the plugin handles resume via knowledge_miner_resume
+      tools: true,
+    },
   });
 
   return agent;
 }
+
+// --------------------------------------------------------
+// defaultThreadConfig
+// --------------------------------------------------------
 
 export function defaultThreadConfig() {
   return {
     configurable: {
       thread_id: uuidv4(),
     },
-    recursionLimit: 100, // Increase from default 25 to allow more complex research tasks
+    /**
+     * Recursion limit caps LangGraph / DeepAgents steps.
+     * 60 gives a bit more room than 40 but is still small enough
+     * to avoid runaway loops, especially with the tight prompts above.
+     */
+    recursionLimit: 60,
   };
 }
