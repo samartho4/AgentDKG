@@ -42,90 +42,173 @@ export function createKnowledgeMinerAgent(ctx: DkgPluginContext) {
    * - If a UAL is present, call dkg_get ONCE to inspect it.
    * - Use a FEW web searches to cross-check facts.
    * - Produce 2 files ONLY:
-   *     /memories/knowledge/{{domain}}/report.md
-   *     /memories/knowledge/{{domain}}/triples.md
+   *     /memories/knowledge/{{domain}}/community_note.md
+   *     /memories/knowledge/{{domain}}/triples.jsonld
    */
   const enrichmentSubagent: SubAgent = {
-    name: "knowledge_enrichment",
-    description:
-      "Inspect one DKG asset plus web sources and write a short report + RDF-style triples.",
-    systemPrompt: `${TOKEN_BUDGET_NOTE}
+
+  name: "knowledge_enrichment",
+
+  description:
+
+    "Inspect one DKG asset plus web sources and write a compact JSON-LD enrichment + community note.",
+
+  systemPrompt: `${TOKEN_BUDGET_NOTE}
 
 You are the ENRICHMENT subagent.
 
 Goal:
+
 - For a single task + optional UAL, combine DKG data and a few web sources
-  into a compact report and a small set of RDF-style triples.
+
+  into:
+
+  1) A small JSON-LD enrichment graph, and
+
+  2) A short community-note style Markdown summary.
 
 Very important rules:
+
 - NEVER call write_todos or any todo-related tools.
+
 - Use only these tools here:
+
   • dkg_get
+
   • internet_search
+
   • read_file / write_file (filesystem)
+
 - Keep tool calls minimal and focused.
 
 Assume optionally that the main agent gives you:
+
 - a domain string like "supply-chain" or "general".
+
 - a UAL embedded in the task text if available.
 
-Workflow (single pass):
+Filesystem (MAX 2 FILES):
+
+- /memories/knowledge/{{domain}}/triples.jsonld
+
+- /memories/knowledge/{{domain}}/community_note.md
+
+Where {{domain}} is:
+
+- the explicit domain from the task, or
+
+- "general" if not given.
+
+Single-pass workflow:
 
 1) Parse domain and UAL
-   - If the user task or earlier messages clearly contain a DKG UAL, note it.
-   - If no UAL is obvious, you may skip dkg_get.
 
-2) DKG inspection
-   - If you have a UAL, call dkg_get AT MOST ONCE to see its JSON.
-   - Do NOT paste raw JSON into messages; summarize in 5–10 bullets.
+   - If the user task or earlier messages clearly contain a DKG UAL, note it.
+
+   - If no UAL is obvious, you may skip dkg_get and just rely on web search.
+
+2) DKG inspection (if UAL is available)
+
+   - Call dkg_get AT MOST ONCE for that UAL.
+
+   - Treat the returned body as a JSON-LD array.
+
+   - Identify the PRIMARY_SUBJECT_ID dynamically:
+
+     • Prefer the node whose @type includes a schema:Organization-like type.
+
+     • If several, prefer the one whose name best matches the main company
+
+       mentioned in the task (e.g., "TSMC", "Taiwan Semiconductor Manufacturing Company").
+
+     • If still ambiguous, choose the node with the most outgoing properties.
+
+   - Do NOT paste raw JSON into messages; summarize in 5–8 bullets.
 
 3) Web cross-check
-   - Call internet_search up to 3 times.
-   - For each search, pull only the key facts + 1–3 useful URLs.
 
-4) Write TWO files only:
-   - /memories/knowledge/{{domain}}/report.md
-   - /memories/knowledge/{{domain}}/triples.md
+   - Call internet_search AT MOST 3 times for focused queries
 
-   Where {{domain}} is:
-   - the explicit domain from the task, or
-   - "general" if not given.
+     (suppliers, customers, sites, risk, etc.).
 
-   report.md structure (keep it tight):
-   - Title line
-   - "Key facts" (bullets, grouped logically)
-   - "Supply / risk / impact" (if relevant)
-   - "Evidence (URLs)" – a short bullet list of URLs
-   - "Open questions" – at most 3 bullets
+   - If you hit 3 searches, STOP searching and summarize what you have.
 
-   triples.md:
-   - 5–20 RDF-style triples, one per line, e.g.
-     subject predicate object .
+   - For each search, extract only key facts + 1–3 high-quality URLs.
 
-5) At the END of report.md, append a tiny JSON block:
-   \`\`\`json
-   { "uals": ["..."], "main_ual": "..." }
-   \`\`\`
+4) JSON-LD enrichment (triples.jsonld)
+
+   - Build a SMALL JSON-LD array (5–30 nodes total) that:
+
+     • REUSES PRIMARY_SUBJECT_ID for the main entity when a DKG asset exists.
+
+     • Adds ONLY NEW facts as additional properties on that subject
+
+       (avoid exact duplicates of existing triples).
+
+     • Introduces new related entities (suppliers, customers, locations, risks)
+
+       with stable @id values (e.g., "uuid:..." or URLs).
+
+     • Connects them to PRIMARY_SUBJECT_ID via appropriate schema.org predicates
+
+       (e.g., supplier, customer, location, geopoliticalRisk, supplyChainSignificance).
+
+   - If there was no UAL / no dkg_get, you may still define a main subject
+
+     @id yourself and build a small JSON-LD graph around it.
+
+   - Write this JSON-LD array as pretty-printed JSON to:
+
+     /memories/knowledge/{{domain}}/triples.jsonld
+
+     using write_file exactly once (overwrite is fine).
+
+5) Community note (community_note.md)
+
+   - Write a concise Markdown note to:
+
+     /memories/knowledge/{{domain}}/community_note.md
+
+   Recommended structure:
+
+   - Title line (e.g., "# TSMC supply-chain enrichment note")
+
+   - "Key facts" – bullets summarizing the most important findings.
+
+   - "Supply / risk / impact" – a few bullets or a short paragraph.
+
+   - "Evidence (URLs)" – short bullet list of the best sources.
+
+   - "Open questions" – at most 3 bullets.
 
 Constraints:
-- Use EACH file path at most once with write_file (overwrite is fine).
+
+- Use EACH of the two file paths at most once with write_file.
+
 - Keep each file ≲ 400 tokens.
-- Do not create any other files.`,
-    tools: [dkgGet as any, internetSearch as any],
-  };
+
+- Do NOT create any other files.
+
+- Do NOT publish or update assets yourself; leave dkg_create to the main agent
+
+  after human review.`,
+
+  tools: [dkgGet as any, internetSearch as any],
+
+};
 
   /**
    * SUBAGENT 2: VALIDATION
    *
    * Responsibilities
-   * - Read report.md + triples.md for the same domain.
+   * - Read community_note.md + triples.jsonld for the same domain.
    * - Use x402_trust_score a couple of times as a simulated signal.
-   * - Append a compact validation section + final JSON block to report.md.
+   * - Append a compact validation section + final JSON block to community_note.md.
    */
   const validationSubagent: SubAgent = {
     name: "knowledge_validation",
     description:
-      "Read report + triples, call x402_trust_score sparingly, and append a compact validation summary.",
+      "Read community note + triples, call x402_trust_score sparingly, and append a compact validation summary.",
     systemPrompt: `${TOKEN_BUDGET_NOTE}
 
 You are the VALIDATION subagent.
@@ -135,8 +218,8 @@ Goal:
   global trust score.
 
 Inputs:
-- /memories/knowledge/{{domain}}/report.md
-- /memories/knowledge/{{domain}}/triples.md
+- /memories/knowledge/{{domain}}/community_note.md
+- /memories/knowledge/{{domain}}/triples.jsonld
 
 (Use "general" for {{domain}} if no domain is given.)
 
@@ -146,47 +229,60 @@ Rules:
   • read_file / write_file
   • x402_trust_score
 - Keep all validation text very short and concrete.
+- Use AT MOST 1 x402_trust_score call total.
 
 Single validation pass:
 
 1) Read files
-   - Use read_file to load report.md and triples.md.
+   - Use read_file to load community_note.md and triples.jsonld.
    - Identify 3–7 key claims and any UAL(s) mentioned in the JSON block.
 
 2) Call x402_trust_score
-   - Choose at most 2 UALs (or 1 if only one exists).
-   - Call x402_trust_score once per chosen UAL with a short "reason".
+   - Choose AT MOST 1 UAL (the most important one).
+   - Call x402_trust_score ONCE with a short "reason".
    - Remember: this is a SIMULATED trust signal; treat it as one input
      among others (web evidence, internal consistency, etc.).
 
 3) Compute a global_trust_score in [0, 1]
    - Blend:
-     • strength of evidence from report + triples,
+     • strength of evidence from community_note + triples,
      • simulated x402 scores,
      • any obvious gaps or concerns.
    - You do not need complex math; simple reasoning is enough.
 
-4) APPEND to report.md (do NOT create new files):
+4) APPEND to community_note.md (do NOT create new files):
    - A "Validation summary" section:
      • Bullet list of well-supported claims.
      • Bullet list of weak / partially supported points.
    - A short line like:
      "Global trust score: 0.82 (high confidence in core facts, moderate in economic figures)."
 
-5) At the very end of report.md, append a JSON block:
+5) At the very end of community_note.md, append a JSON block:
    \`\`\`json
    { "global_trust_score": 0.0-1.0 }
    \`\`\`
 
+6) Trust history (self-improvement):
+   - Maintain a file at /memories/trust/history.jsonl.
+   - For each validation run, append one JSON line like:
+     {"ual": "<main_ual>", "global_trust_score": 0.87,
+      "reason": "TSMC supply chain enrichment", "timestamp": "..."}
+   - If the file already exists, read it, append the new line,
+     and write it back.
+   - Because /memories/** is persistent, this history will survive
+     across threads and sessions.
+
 Keep the whole validation addition ≲ 250 tokens.
-Do not overwrite the earlier report content; only append.`,
+Do not overwrite the earlier community note content; only append.`,
     tools: [x402TrustScore as any],
   };
 
   // -----------------------------
   // Memory backend
   // -----------------------------
-
+  // Note: For true persistent memory across sessions, you would use
+  // CompositeBackend with StoreBackend. For now, StateBackend provides
+  // per-thread memory which is sufficient for the demo.
   const backend = (config: { state: unknown; store?: any }) =>
     new StateBackend(config);
 
@@ -197,6 +293,23 @@ Do not overwrite the earlier report content; only append.`,
   const systemPrompt = `${TOKEN_BUDGET_NOTE}
 
 You are the MAIN KNOWLEDGE MINER.
+
+You have long-term memory mounted at the "/memories/" path.
+
+There is a persistent instructions file at:
+  /memories/instructions.md
+
+At the start of each run:
+- Try to read_file("/memories/instructions.md").
+- If it does not exist, create it with 3–5 bullets describing
+  stable user preferences and agent behaviors that worked well.
+- Treat any bullets in that file as additional system-level
+  instructions (never contradict them unless clearly obsolete).
+
+When the user gives explicit feedback like
+"please always do X", "I prefer Y", or "never do Z":
+- Append a new bullet to /memories/instructions.md using
+  write_file or edit_file so future runs can adapt.
 
 You orchestrate TWO subagents inside a DeepAgents graph:
 - "knowledge_enrichment"
@@ -235,8 +348,14 @@ Token + tool discipline:
   (aim for ≲ 15 per run).
 - Always summarize tool results instead of dumping them.
 - Prefer re-using:
-  • /memories/knowledge/{{domain}}/report.md
-  • /memories/knowledge/{{domain}}/triples.md
+  • /memories/knowledge/{{domain}}/community_note.md
+  • /memories/knowledge/{{domain}}/triples.jsonld
+
+Trust history (self-improvement):
+- When computing a new global_trust_score, you MAY read
+  /memories/trust/history.jsonl to see prior scores for the same UAL
+  and mention any patterns (e.g., "this publisher has consistently
+  high scores across past runs").
 
 Final answer to the user:
 - 2–4 short paragraphs summarizing:
@@ -245,7 +364,7 @@ Final answer to the user:
   • the final global_trust_score in [0,1] with a plain-language label
     (e.g., "high", "medium", "low" confidence).
 - Mention the main report path so the UI can open it, e.g.
-  "/memories/knowledge/supply-chain/report.md".`;
+  "/memories/knowledge/supply-chain/community_note.md".`;
 
   const agent = createDeepAgent({
     systemPrompt,
@@ -273,9 +392,9 @@ export function defaultThreadConfig() {
     },
     /**
      * Recursion limit caps LangGraph / DeepAgents steps.
-     * 60 gives a bit more room than 40 but is still small enough
-     * to avoid runaway loops, especially with the tight prompts above.
+     * 40 is tight enough to prevent timeouts while allowing
+     * the enrichment + validation workflow to complete.
      */
-    recursionLimit: 60,
+    recursionLimit: 40,
   };
 }
