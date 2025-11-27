@@ -11,6 +11,7 @@ type Props = {
   isOpen: boolean;
   onToggle: () => void;
   onDecideInterrupt?: (decision: "approve" | "reject") => void;
+  initialMeta?: DeepAgentsMeta | null; // ✅ new
 };
 
 type Todo = {
@@ -43,30 +44,37 @@ type DeepAgentsMeta = {
 };
 
 function extractDeepAgentsMeta(messages: ChatMessage[]): DeepAgentsMeta | null {
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  if (!lastAssistant) return null;
+  // Scan from newest → oldest, skipping user messages
+  const reversed = [...messages].reverse();
+  for (const m of reversed) {
+    if (m.role === "user") continue;
 
-  const texts: string[] = [];
-  for (const c of toContents(lastAssistant.content)) {
-    if (c.type === "text") texts.push(c.text);
+    const texts: string[] = [];
+    for (const c of toContents(m.content)) {
+      if (c.type === "text") texts.push(c.text);
+    }
+    if (!texts.length) continue;
+
+    const joined = texts.join("\n\n");
+    // allow optional whitespace after the tag
+    const match = joined.match(/```deepagents-meta\s*([\s\S]*?)```/);
+    if (!match) continue;
+
+    try {
+      const json = JSON.parse((match[1] || "").trim());
+      return json as DeepAgentsMeta;
+    } catch (err) {
+      console.error("Failed to parse deepagents-meta JSON:", err);
+      return null;
+    }
   }
-  if (!texts.length) return null;
-
-  const joined = texts.join("\n\n");
-  const match = joined.match(/```deepagents-meta([\s\S]*?)```/);
-  if (!match) return null;
-
-  try {
-    const json = JSON.parse(match[1] || "{}");
-    return json;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
-export default function DeepAgentsPanel({ messages, isOpen, onToggle, onDecideInterrupt }: Props) {
+export default function DeepAgentsPanel({ messages, isOpen, onToggle, onDecideInterrupt, initialMeta }: Props) {
   const colors = useColors();
-  const meta = useMemo(() => extractDeepAgentsMeta(messages), [messages]);
+  const metaFromMessages = useMemo(() => extractDeepAgentsMeta(messages), [messages]);
+  const meta = initialMeta || metaFromMessages;
   const [expandedTool, setExpandedTool] = useState<number | null>(null);
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
   
