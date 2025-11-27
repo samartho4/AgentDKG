@@ -103,24 +103,29 @@ function upsertThreadFromSession(
 }
 
 function extractDeepAgentsMetaFromMessages(messages: ChatMessage[]): any | null {
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
-  if (!lastAssistant) return null;
+  // Scan from newest → oldest, skipping user messages
+  const reversed = [...messages].reverse();
+  for (const m of reversed) {
+    if (m.role === "user") continue;
 
-  const texts: string[] = [];
-  for (const c of toContents(lastAssistant.content)) {
-    if (c.type === "text") texts.push(c.text);
+    const texts: string[] = [];
+    for (const c of toContents(m.content)) {
+      if (c.type === "text") texts.push(c.text);
+    }
+    if (!texts.length) continue;
+
+    const joined = texts.join("\n\n");
+    // allow optional whitespace after the tag
+    const match = joined.match(/```deepagents-meta\s*([\s\S]*?)```/);
+    if (!match) continue;
+
+    try {
+      return JSON.parse((match[1] || "").trim());
+    } catch {
+      return null;
+    }
   }
-  if (!texts.length) return null;
-
-  const joined = texts.join("\n\n");
-  const match = joined.match(/```deepagents-meta([\s\S]*?)```/);
-  if (!match) return null;
-
-  try {
-    return JSON.parse(match[1] || "{}");
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 export default function ChatPage() {
@@ -141,6 +146,7 @@ export default function ChatPage() {
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [kmSessionsById, setKmSessionsById] = useState<Record<string, KnowledgeMinerSessionDebug>>({});
   const [isThreadsCollapsed, setIsThreadsCollapsed] = useState(false);
+  const [deepAgentsMeta, setDeepAgentsMeta] = useState<any | null>(null);
 
   const chatMessagesRef = useRef<ScrollView>(null);
 
@@ -189,6 +195,7 @@ export default function ChatPage() {
     tools.reset();
     setKmSession(null);
     setActiveThreadId(null);
+    setDeepAgentsMeta(null); // ✅
   }, [tools]);
 
   const handleSelectThread = useCallback((thread: ThreadSummary) => {
@@ -214,11 +221,17 @@ export default function ChatPage() {
       .then((result) => {
         let content = result.content as ToolCallResultContent;
 
-        // If this is knowledge_miner_run, extract debug payload from _meta
-        if (tc.name === "knowledge_miner_run" && (result as any)._meta?.debugPayload) {
-          const debugPayload = (result as any)._meta.debugPayload;
-          if (debugPayload.kind === "knowledge_miner_session") {
-            handleKnowledgeMinerResult(debugPayload as KnowledgeMinerSessionDebug);
+        if (tc.name === "knowledge_miner_run") {
+          const meta = (result as any)._meta;
+          
+          // ✅ store Knowledge Miner session for KnowledgeMinerPanel
+          if (meta?.debugPayload && meta.debugPayload.kind === "knowledge_miner_session") {
+            handleKnowledgeMinerResult(meta.debugPayload as KnowledgeMinerSessionDebug);
+          }
+          
+          // ✅ store DeepAgents meta for DeepAgentsPanel
+          if (meta?.deepAgentsMeta) {
+            setDeepAgentsMeta(meta.deepAgentsMeta);
           }
         }
 
@@ -594,6 +607,7 @@ export default function ChatPage() {
                       isOpen={isDeepAgentsPanelOpen}
                       onToggle={() => setIsDeepAgentsPanelOpen((v) => !v)}
                       onDecideInterrupt={handleDeepAgentsDecisions}
+                      initialMeta={deepAgentsMeta} // ✅ new
                     />
                   </Container>
                 </View>
@@ -615,6 +629,7 @@ export default function ChatPage() {
                 isOpen={isDeepAgentsPanelOpen}
                 onToggle={() => setIsDeepAgentsPanelOpen((v) => !v)}
                 onDecideInterrupt={handleDeepAgentsDecisions}
+                initialMeta={deepAgentsMeta} // ✅ new
               />
               <Chat.Messages
                 ref={chatMessagesRef}
