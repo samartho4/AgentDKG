@@ -256,9 +256,32 @@ export default defineDkgPlugin((ctx, mcp) => {
             for (const tc of msg.tool_calls) {
               toolsUsed.add(tc.name);
 
+              // ✅ Better subagent detection: handle both string and object args
               if (tc.name === "task") {
-                const taskName = tc.args?.task || "unnamed-task";
-                subagentsUsed.add(taskName);
+                const rawArgs = tc.args;
+                console.log("🔍 TASK tool args:", JSON.stringify(rawArgs, null, 2));
+                let subagentName: string | null = null;
+
+                if (typeof rawArgs === "string") {
+                  // e.g. "knowledge_enrichment"
+                  subagentName = rawArgs;
+                } else if (rawArgs && typeof rawArgs === "object") {
+                  subagentName =
+                    // *** THIS IS WHAT WAS MISSING ***
+                    (rawArgs as any).subagent_type ||
+                    (rawArgs as any).agent_name ||
+                    (rawArgs as any).agent ||
+                    (rawArgs as any).subagent ||
+                    (rawArgs as any).name ||
+                    (typeof (rawArgs as any).task === "string"
+                      ? (rawArgs as any).task.slice(0, 60)
+                      : null);
+                }
+
+                if (!subagentName) {
+                  subagentName = "unnamed-task";
+                }
+                subagentsUsed.add(subagentName);
               }
 
               let toolResult: string | null = null;
@@ -301,6 +324,18 @@ export default defineDkgPlugin((ctx, mcp) => {
           }
         }
 
+        // Flatten files into strings for proper display
+        const rawFiles = files || {};
+        const flatFiles: Record<string, string> = {};
+        for (const [path, value] of Object.entries(rawFiles)) {
+          if (typeof value === "string") {
+            flatFiles[path] = value;
+          } else if (value && typeof value === "object" && "content" in value) {
+            // @ts-ignore
+            flatFiles[path] = String((value as any).content ?? "");
+          }
+        }
+
         // Metadata for DeepAgentsPanel (right workspace)
         const metaForPanel = {
           threadId,
@@ -313,8 +348,8 @@ export default defineDkgPlugin((ctx, mcp) => {
           memoriesFiles:
             memoriesFiles.length > 0 ? memoriesFiles : undefined,
           allFiles:
-            Object.keys(files).length > 0 ? Object.keys(files) : undefined,
-          filesContent: files,
+            Object.keys(flatFiles).length > 0 ? Object.keys(flatFiles) : undefined,
+          filesContent: flatFiles,
           toolsUsed:
             Array.from(toolsUsed).length > 0
               ? Array.from(toolsUsed)
@@ -339,6 +374,11 @@ export default defineDkgPlugin((ctx, mcp) => {
 
         const taskDomain = domain || "general";
 
+        // Prioritize community_note.md as the main report
+        const mainReportPath =
+          memoriesFiles.find((p) => p.endsWith("community_note.md")) ??
+          memoriesFiles[0];
+
         // Debug payload for ChatPage → KnowledgeMinerPanel (right side)
         const debugPayload = {
           kind: "knowledge_miner_session" as const,
@@ -346,11 +386,10 @@ export default defineDkgPlugin((ctx, mcp) => {
           domain: taskDomain,
           task,
           todos: todosWithStatus,
-          workspacePaths: Object.keys(files),
+          workspacePaths: Object.keys(flatFiles),
           subagentsUsed: Array.from(subagentsUsed).map((name) => ({ name })),
           trustSignals,
-          mainReportPath:
-            memoriesFiles.length > 0 ? memoriesFiles[0] : undefined,
+          mainReportPath: mainReportPath,
         };
 
         const lastMessageText =
@@ -378,6 +417,7 @@ export default defineDkgPlugin((ctx, mcp) => {
           ] as any,
           _meta: {
             debugPayload,
+            deepAgentsMeta: metaForPanel, // ✅ new
           },
         };
       } catch (err: any) {
