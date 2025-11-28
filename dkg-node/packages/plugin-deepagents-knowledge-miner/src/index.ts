@@ -49,6 +49,8 @@ export default defineDkgPlugin((ctx, mcp) => {
     async ({ task, domain, sessionId }) => {
       try {
         console.log("📝 Creating knowledge miner agent...");
+        console.log("📋 Received parameters:", { task: task.substring(0, 100), domain, sessionId });
+        console.log("🔌 publishProgress available?", !!publishProgress);
         const agent = createKnowledgeMinerAgent(ctx);
         console.log("✅ Agent created successfully");
 
