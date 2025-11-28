@@ -3,6 +3,8 @@ import {
   createDeepAgent,
   type SubAgent,
   StateBackend,
+  CompositeBackend,
+  StoreBackend,
 } from "deepagents";
 
 import {
@@ -23,6 +25,62 @@ const TOKEN_BUDGET_NOTE = `Be aggressively concise.
 - Never repeat the task or earlier instructions.
 - Never paste long web pages or raw JSON; only short summaries.
 - Use bullets and short paragraphs.`;
+
+// --------------------------------------------------------
+// Cross-thread persistent memory store
+// --------------------------------------------------------
+// This store persists across all threads/conversations
+// Files in /memories/ are accessible from any thread
+const memoryData: Record<string, any> = {};
+
+const crossThreadStore = {
+  async get(namespace: string[], key: string) {
+    const fullKey = [...namespace, key].join("/");
+    return memoryData[fullKey];
+  },
+  async put(namespace: string[], key: string, value: any) {
+    const fullKey = [...namespace, key].join("/");
+    memoryData[fullKey] = value;
+  },
+  async delete(namespace: string[], key: string) {
+    const fullKey = [...namespace, key].join("/");
+    delete memoryData[fullKey];
+  },
+  async search(namespacePrefix: string[]) {
+    const prefix = namespacePrefix.join("/");
+    return Object.keys(memoryData)
+      .filter((k) => k.startsWith(prefix))
+      .map((k) => [k.split("/").slice(-1)[0], memoryData[k]]);
+  },
+  async batch(ops: any[]) {
+    const results: any[] = [];
+    for (const op of ops) {
+      if (op[0] === "put") {
+        await this.put(op[1], op[2], op[3]);
+        results.push({ ok: true });
+      } else if (op[0] === "delete") {
+        await this.delete(op[1], op[2]);
+        results.push({ ok: true });
+      }
+    }
+    return results;
+  },
+  async listNamespaces(prefix: string[]) {
+    const prefixStr = prefix.join("/");
+    const namespaces = new Set<string>();
+    Object.keys(memoryData).forEach((k) => {
+      if (k.startsWith(prefixStr)) {
+        const parts = k.split("/");
+        if (parts.length > prefix.length) {
+          namespaces.add(parts[prefix.length]);
+        }
+      }
+    });
+    return Array.from(namespaces);
+  },
+  async start() {},
+  async stop() {},
+};
 
 // --------------------------------------------------------
 // createKnowledgeMinerAgent
@@ -278,13 +336,19 @@ Do not overwrite the earlier community note content; only append.`,
   };
 
   // -----------------------------
-  // Memory backend
+  // Memory backend with cross-thread persistence
   // -----------------------------
-  // Note: For true persistent memory across sessions, you would use
-  // CompositeBackend with StoreBackend. For now, StateBackend provides
-  // per-thread memory which is sufficient for the demo.
-  const backend = (config: { state: unknown; store?: any }) =>
-    new StateBackend(config);
+  // CompositeBackend routes /memories/ to persistent StoreBackend
+  // while keeping per-thread state in StateBackend
+  const backend = (config: { state: unknown; store?: any }) => {
+    const store = config.store || crossThreadStore;
+    const stateBackend = new StateBackend(config);
+    const storeBackend = new StoreBackend({ ...config, store: store as any });
+    
+    return new CompositeBackend(stateBackend, {
+      "/memories/": storeBackend,
+    });
+  };
 
   // -----------------------------
   // Main Knowledge Miner agent
@@ -370,6 +434,8 @@ Final answer to the user:
     systemPrompt,
     tools: [internetSearch, dkgGet, dkgCreate, x402TrustScore] as any,
     backend,
+    // Cross-thread persistent store for /memories/ files
+    store: crossThreadStore as any,
     subagents: [enrichmentSubagent, validationSubagent],
 
     interruptOn: {
