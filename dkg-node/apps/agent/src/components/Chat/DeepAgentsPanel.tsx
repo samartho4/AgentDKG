@@ -89,7 +89,7 @@ export default function DeepAgentsPanel({ messages, isOpen, onToggle, onDecideIn
     
     const sessionId = meta?.threadId;
     const eventSource = new EventSource(
-      `${process.env.EXPO_PUBLIC_APP_URL}/progress?sessionId=${sessionId}`
+      `${process.env.EXPO_PUBLIC_MCP_URL}/progress?sessionId=${sessionId}`
     );
 
     setIsStreaming(true);
