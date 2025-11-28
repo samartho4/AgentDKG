@@ -24,7 +24,7 @@ const createTransport = (
     clientUri + "/chat",
     {
       redirect_uris: [clientUri + "/chat"],
-      client_name: "DKG Agent",
+      client_name: "Agent DKG",
       client_uri: clientUri,
       logo_uri: process.env.EXPO_PUBLIC_APP_URL + "/logo.png",
       scope: "mcp llm blob",

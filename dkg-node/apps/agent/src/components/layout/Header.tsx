@@ -14,7 +14,7 @@ export default function Header({
     <LayoutPill>
       <HeaderLogo
         image={require("../../assets/logo.svg")}
-        text="DKG Agent"
+        text="Agent DKG"
         textFont="SpaceGrotesk_400Regular"
         style={[
           { flex: 1 },
@@ -27,7 +27,7 @@ export default function Header({
 
       {mode === "default" && (
         <HeaderNav style={{ flex: 1 }}>
-          <HeaderNav.Link href="/chat" text="Agent" icon={StarsIcon} />
+          <HeaderNav.Link href="/chat" text="Miner" icon={StarsIcon} />
         </HeaderNav>
       )}
 
