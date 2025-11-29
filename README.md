@@ -10,7 +10,7 @@
 
 **🏆 Built for "Scaling Trust in the Age of AI" Global Hackathon**
 
-[Architecture](#-architecture) • [Demo](#-demo) • [Installation](#-installation) • [Documentation](#-documentation)
+[Architecture](#-architecture) • [Demo](https://www.youtube.com/watch?v=sfLTXr7AEdw) • [Installation](#-installation) • [Documentation](#-documentation)
 
 </div>
 
