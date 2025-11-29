@@ -6,11 +6,11 @@
 
 [![Challenge](https://img.shields.io/badge/Challenge-4%20Wild%20Card-purple?style=for-the-badge)](https://origintrail.io)
 [![DKG Edge Node](https://img.shields.io/badge/DKG%20Edge%20Node-Required%20✓-green?style=for-the-badge)](https://docs.origintrail.io)
-[![Architecture](https://img.shields.io/badge/Architecture-Agent%20│%20Knowledge%20│%20Trust-blue?style=for-the-badge)](https://origintrail.io)
+[![Architecture](https://img.shields.io/badge/Architecture-Agent%20│%20Knowledge%20│%20Trust-blue?style=for-the-badge)](https://x.com/sxmarthx/status/1994819143544312046)
 
 **🏆 Built for "Scaling Trust in the Age of AI" Global Hackathon**
 
-[Architecture](#-architecture) • [Demo](https://www.youtube.com/watch?v=sfLTXr7AEdw) • [Installation](#-installation) • [Documentation](#-documentation)
+[Architecture](https://x.com/sxmarthx/status/1994819143544312046) • [Demo](https://www.youtube.com/watch?v=sfLTXr7AEdw) • [Installation](https://deepwiki.com/samartho4/AgentDKG/2-getting-started) • [Documentation](https://deepwiki.com/samartho4/AgentDKG/1-overview)
 
 </div>
 
